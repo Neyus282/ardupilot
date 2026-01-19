@@ -322,6 +322,7 @@ public:
             CIRCLE =           8,   // use AC_Circle's provided yaw (used during Loiter-Turns commands)
             PILOT_RATE =       9,   // target rate from pilot stick
             WEATHERVANE =     10,   // yaw into wind
+            PRECLAND_TARGET = 11,   // point towards precision landing target orientation
         };
 
         // mode(): current method of determining desired yaw:
@@ -345,6 +346,17 @@ public:
         void set_yaw_angle_offset_deg(const float yaw_angle_offset_deg);
 
         bool reached_fixed_yaw_target();
+
+        // Set precision landing target yaw (called from precland system)
+        void set_precland_target_yaw_rad(float yaw_rad) {
+            _precland_target_yaw_rad = yaw_rad;
+            _precland_target_yaw_valid = true;
+        }
+
+        // Invalidate precland target yaw (called when target is lost)
+        void invalidate_precland_target_yaw() {
+            _precland_target_yaw_valid = false;
+        }
 
 #if WEATHERVANE_ENABLED
         void update_weathervane(const float pilot_yaw_rads);
@@ -388,6 +400,10 @@ public:
         float _yaw_angle_rad;
         float _yaw_rate_rads;
         float _pilot_yaw_rate_rads;
+
+        // Precision Landing target yaw
+        float _precland_target_yaw_rad;     // target yaw from precision landing (radians)
+        bool _precland_target_yaw_valid;    // true if precland target yaw is valid
     };
     static AutoYaw auto_yaw;
 

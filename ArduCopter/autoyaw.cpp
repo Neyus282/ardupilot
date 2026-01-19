@@ -103,12 +103,17 @@ void Mode::AutoYaw::set_mode(Mode yaw_mode)
         break;
 
     case Mode::CIRCLE:
-    case Mode::PILOT_RATE:
-    case Mode::WEATHERVANE:
-        // no initialisation required
-        break;
-    }
-}
+     case Mode::PILOT_RATE:
+     case Mode::WEATHERVANE:
+         // no initialisation required
+         break;
+
+     case Mode::PRECLAND_TARGET:
+         // precision landing target yaw - no special initialization needed
+         // yaw angle will be set externally via set_precland_target_yaw_rad()
+         break;
+     }
+ }
 
 // set_fixed_yaw_rad - sets the yaw look at heading for auto mode
 void Mode::AutoYaw::set_fixed_yaw_rad(float yaw_rad, float yaw_rate_rads, int8_t direction, bool relative_angle)
@@ -283,6 +288,14 @@ float Mode::AutoYaw::yaw_rad()
         _yaw_angle_rad = copter.attitude_control->get_att_target_euler_rad().z;
         break;
 
+    case Mode::PRECLAND_TARGET:
+        // return precision landing target yaw if valid
+        if (_precland_target_yaw_valid) {
+            _yaw_angle_rad = _precland_target_yaw_rad;
+        }
+        // if not valid, keep previous _yaw_angle_rad (holds last known value)
+        break;
+
     case Mode::LOOK_AT_NEXT_WP:
     default:
         // point towards next waypoint.
@@ -305,6 +318,7 @@ float Mode::AutoYaw::rate_rads()
     case Mode::LOOK_AHEAD:
     case Mode::RESET_TO_ARMED_YAW:
     case Mode::CIRCLE:
+    case Mode::PRECLAND_TARGET:
         _yaw_rate_rads = 0.0f;
         break;
 
@@ -363,6 +377,7 @@ AC_AttitudeControl::HeadingCommand Mode::AutoYaw::get_heading()
         case Mode::RESET_TO_ARMED_YAW:
         case Mode::ANGLE_RATE:
         case Mode::CIRCLE:
+        case Mode::PRECLAND_TARGET:
             heading.heading_mode = AC_AttitudeControl::HeadingMode::Angle_And_Rate;
             break;
     }

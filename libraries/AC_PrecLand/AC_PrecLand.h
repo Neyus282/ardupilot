@@ -129,6 +129,26 @@ public:
     */
     bool get_target_velocity(Vector2f& ret);
 
+    // ============================================================================
+    // Target Yaw Orientation Support (for Precision Landing with Yaw-Kontrolle)
+    // ============================================================================
+
+    // get target yaw in radians (NED frame, 0 = North, positive = clockwise)
+    // returns true if target yaw is valid and recent, false otherwise
+    // yaw_rad is only modified if function returns true
+    bool get_target_yaw_rad(float &yaw_rad) const;
+
+    // returns true if we have a valid target yaw measurement
+    bool target_yaw_valid() const;
+
+    // get the raw target yaw without timeout check (for logging)
+    float get_target_yaw_rad_raw() const { return _target_yaw_rad; }
+
+    // get timestamp of last target yaw update
+    uint32_t get_target_yaw_timestamp_ms() const { return _target_yaw_timestamp_ms; }
+
+    // ============================================================================
+
     // parameter var table
     static const struct AP_Param::GroupInfo var_info[];
 
@@ -193,6 +213,18 @@ private:
     // results are stored in_target_pos_rel_out_NE, _target_vel_rel_out_ne_ms
     void run_output_prediction();
 
+    // ============================================================================
+    // Target Yaw - Private setter (called by backends)
+    // ============================================================================
+
+    // set target yaw from quaternion received from landing target
+    // called by backend when a valid quaternion is received
+    // yaw_rad: target yaw in radians (NED frame)
+    // timestamp_ms: timestamp when measurement was received
+    void set_target_yaw_rad(float yaw_rad, uint32_t timestamp_ms);
+
+    // ============================================================================
+
     // parameters
     AP_Int8                     _enabled;               // enabled/disabled
     AP_Enum<Type>               _type;                  // precision landing sensor type
@@ -237,6 +269,14 @@ private:
     Vector3f                    _last_veh_velocity_NED_ms;  // AHRS velocity at last estimate
 
     TargetState                 _current_target_state;      // Current status of the landing target
+
+    // ============================================================================
+    // Target Yaw Orientation Variables
+    // ============================================================================
+    float                       _target_yaw_rad;            // Target yaw orientation in radians (NED frame, 0=North, positive=clockwise)
+    bool                        _target_yaw_valid;          // True if target yaw has been received and is recent
+    uint32_t                    _target_yaw_timestamp_ms;   // System time in ms when target yaw was last updated
+    // ============================================================================
 
     // structure and buffer to hold a history of vehicle velocity
     struct inertial_data_frame_s {

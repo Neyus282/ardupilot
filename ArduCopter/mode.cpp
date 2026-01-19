@@ -741,6 +741,30 @@ void Mode::land_run_horizontal_control()
         Vector2f accel_zero;
         // target vel will remain zero if landing target is stationary
         pos_control->input_pos_vel_accel_NE_m(target_pos_ne_m, target_vel_ne_ms, accel_zero);
+
+        // ====================================================================
+        // Precision Landing Yaw Control
+        // ====================================================================
+        float target_yaw_rad;
+        if (copter.precland.get_target_yaw_rad(target_yaw_rad)) {
+            // Valid target yaw available - command vehicle to align
+            auto_yaw.set_precland_target_yaw_rad(target_yaw_rad);
+            if (auto_yaw.mode() != AutoYaw::Mode::PRECLAND_TARGET) {
+                auto_yaw.set_mode(AutoYaw::Mode::PRECLAND_TARGET);
+            }
+        } else {
+            // Target yaw lost or timed out - fall back to hold
+            if (auto_yaw.mode() == AutoYaw::Mode::PRECLAND_TARGET) {
+                auto_yaw.invalidate_precland_target_yaw();
+                auto_yaw.set_mode(AutoYaw::Mode::HOLD);
+            }
+        }
+    } else {
+        // Precision landing not active - ensure we exit PRECLAND_TARGET mode
+        if (auto_yaw.mode() == AutoYaw::Mode::PRECLAND_TARGET) {
+            auto_yaw.invalidate_precland_target_yaw();
+            auto_yaw.set_mode(AutoYaw::Mode::HOLD);
+        }
     }
 #endif
 

@@ -217,6 +217,11 @@ void AC_PrecLand::init(uint16_t update_rate_hz)
     // init as target TARGET_NEVER_SEEN, we will update this later
     _current_target_state = TargetState::TARGET_NEVER_SEEN;
 
+    // initialize target yaw variables
+    _target_yaw_rad = 0.0f;
+    _target_yaw_valid = false;
+    _target_yaw_timestamp_ms = 0;
+
     // default health to false
     _backend = nullptr;
     _backend_state.healthy = false;
@@ -482,11 +487,53 @@ void AC_PrecLand::get_target_velocity_ms(const Vector2f& vehicle_velocity_ne_ms,
 }
 
 // handle_msg - Process a LANDING_TARGET mavlink message
+// handle_msg - Process a LANDING_TARGET mavlink message
 void AC_PrecLand::handle_msg(const mavlink_landing_target_t &packet, uint32_t timestamp_ms)
 {
     // run backend update
     if (_backend != nullptr) {
         _backend->handle_msg(packet, timestamp_ms);
+    }
+
+    // ========================================================================
+    // Process quaternion for target yaw orientation
+    // ========================================================================
+    // The LANDING_TARGET message contains a quaternion q[4] representing
+    // the orientation of the landing target. For our use case (AprilTag),
+    // we extract the yaw angle to align the vehicle during landing.
+    //
+    // Quaternion format: q[0]=w, q[1]=x, q[2]=y, q[3]=z
+    // For a pure yaw rotation (from OpenMV): q = [cos(θ/2), 0, 0, sin(θ/2)]
+    // ========================================================================
+
+    const float q_w = packet.q[0];
+    const float q_x = packet.q[1];
+    const float q_y = packet.q[2];
+    const float q_z = packet.q[3];
+
+    // Calculate quaternion norm squared for validation
+    const float q_norm_sq = q_w*q_w + q_x*q_x + q_y*q_y + q_z*q_z;
+
+    // Quaternion is valid if:
+    // 1. Norm² is approximately 1.0 (between 0.9 and 1.1)
+    // 2. This also ensures quaternion is not all zeros (default/unset)
+    if (q_norm_sq > 0.9f && q_norm_sq < 1.1f) {
+        // Extract yaw from quaternion using ZYX Euler convention
+        // Formula: yaw = atan2(2*(w*z + x*y), 1 - 2*(y² + z²))
+        //
+        // For a pure Z-rotation this simplifies to: yaw = 2*atan2(z, w)
+        // But we use the general formula for robustness
+        float yaw_rad = atan2f(2.0f * (q_w * q_z + q_x * q_y),
+                               1.0f - 2.0f * (q_y * q_y + q_z * q_z));
+
+        // Apply sensor yaw alignment if configured
+        // _yaw_align_cd is the yaw angle from body x-axis to sensor x-axis in centidegrees
+        if (!is_zero(_yaw_align_cd)) {
+            yaw_rad += radians(_yaw_align_cd * 0.01f);
+        }
+
+        // Store the target yaw orientation
+        set_target_yaw_rad(yaw_rad, timestamp_ms);
     }
 }
 
@@ -844,18 +891,48 @@ void AC_PrecLand::Write_Precland()
     };
     AP::logger().WriteBlock(&pkt, sizeof(pkt));
 }
+
 #endif
+
+// ============================================================================
+// Target Yaw Orientation Functions (NUR EINMAL, AUSSERHALB von HAL_LOGGING!)
+// ============================================================================
+
+void AC_PrecLand::set_target_yaw_rad(float yaw_rad, uint32_t timestamp_ms)
+{
+    _target_yaw_rad = wrap_PI(yaw_rad);
+    _target_yaw_valid = true;
+    _target_yaw_timestamp_ms = timestamp_ms;
+}
+
+bool AC_PrecLand::get_target_yaw_rad(float &yaw_rad) const
+{
+    if (!_target_yaw_valid) {
+        return false;
+    }
+    if ((AP_HAL::millis() - _target_yaw_timestamp_ms) > LANDING_TARGET_TIMEOUT_MS) {
+        return false;
+    }
+    yaw_rad = _target_yaw_rad;
+    return true;
+}
+
+bool AC_PrecLand::target_yaw_valid() const
+{
+    if (!_target_yaw_valid) {
+        return false;
+    }
+    return (AP_HAL::millis() - _target_yaw_timestamp_ms) <= LANDING_TARGET_TIMEOUT_MS;
+}
 
 // singleton instance
 AC_PrecLand *AC_PrecLand::_singleton;
 
 namespace AP {
-
 AC_PrecLand *ac_precland()
 {
     return AC_PrecLand::get_singleton();
 }
-
 }
 
 #endif // AC_PRECLAND_ENABLED
