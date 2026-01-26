@@ -44,6 +44,12 @@ bool ModeLand::init(bool ignore_checks)
 #if AC_PRECLAND_ENABLED
     // initialise precland state machine
     copter.precland_statemachine.init();
+    
+    // Initialize yaw alignment state machine for precision landing
+    copter.precland.yaw_align_init();
+    
+    // NEU: Cache invalidieren
+    invalidate_yaw_align_cache();
 #endif
 
     return true;

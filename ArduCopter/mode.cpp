@@ -1,5 +1,17 @@
 #include "Copter.h"
 
+#if AC_PRECLAND_ENABLED
+bool Mode::_cached_yaw_allow_descent = false;
+bool Mode::_cached_yaw_aligned = false;
+float Mode::_cached_desired_yaw_rad = 0.0f;
+float Mode::_cached_yaw_error_deg = 0.0f;
+uint8_t Mode::_cached_yaw_state = static_cast<uint8_t>(AC_PrecLand::YawAlignState::SEARCHING);
+uint32_t Mode::_yaw_cache_update_ms = 0;
+// Static variables for cache control
+static uint32_t _last_control_cycle_ms = 0;
+static bool _cache_valid_this_cycle = false;
+#endif
+
 /*
  * High level calls to set and update flight modes logic for individual
  * flight modes is in control_acro.cpp, control_stabilize.cpp, etc
@@ -618,8 +630,31 @@ void Mode::land_run_vertical_control(bool pause_descent)
 {
     float climb_rate_ms = 0;
     bool ignore_descent_limit = false;
+    
+#if AC_PRECLAND_ENABLED
+    // =================================================================
+    // KRITISCH: Cache MUSS zuerst aktualisiert werden!
+    // =================================================================
+    if (copter.precland.yaw_align_enabled()) {
+        // Cache explizit aktualisieren bevor wir ihn lesen
+        update_yaw_align_cache();
+        
+        uint8_t state = get_cached_yaw_state();
+        
+        // Pause descent during active alignment (independent of XY error)
+        if (state == static_cast<uint8_t>(AC_PrecLand::YawAlignState::COARSE_ALIGNING) ||
+            state == static_cast<uint8_t>(AC_PrecLand::YawAlignState::FINE_ALIGNING)) {
+            pause_descent = true;
+        }
+        
+        // Use cached value as additional safety check
+        if (!get_cached_yaw_allow_descent()) {
+            pause_descent = true;
+        }
+    }
+#endif
+    
     if (!pause_descent) {
-
         // do not ignore limits until we have slowed down for landing
         ignore_descent_limit = (MAX(g2.land_alt_low_cm, 100) * 0.01 > get_alt_above_ground_m()) || copter.ap.land_complete_maybe;
 
@@ -633,81 +668,176 @@ void Mode::land_run_vertical_control(bool pause_descent)
         // Don't speed up for landing.
         max_land_descent_speed_ms = MAX(max_land_descent_speed_ms, abs(g.land_speed_cms) * 0.01);
 
-        // Compute a vertical velocity demand such that the vehicle approaches g2.land_alt_low_cm. Without the below constraint, this would cause the vehicle to hover at g2.land_alt_low_cm.
+        // Compute a vertical velocity demand
         climb_rate_ms = sqrt_controller(MAX(g2.land_alt_low_cm, 100) * 0.01 - get_alt_above_ground_m(), pos_control->D_get_pos_p().kP(), pos_control->D_get_max_accel_mss(), G_Dt);
 
-        // Constrain the demanded vertical velocity so that it is between the configured maximum descent speed and the configured minimum descent speed.
+        // Constrain the demanded vertical velocity
         climb_rate_ms = constrain_float(climb_rate_ms, -max_land_descent_speed_ms, -abs(g.land_speed_cms) * 0.01);
 
 #if AC_PRECLAND_ENABLED
         const bool navigating = pos_control->NE_is_active();
+        // FIX: Use target_visible() for immediate reaction to backend measurements
+        // This allows descent control to react immediately without waiting for EKF initialization
+        bool target_is_visible = !copter.ap.land_repo_active && copter.precland.target_visible() && navigating;
         bool doing_precision_landing = !copter.ap.land_repo_active && copter.precland.target_acquired() && navigating;
+        
+        // FIX: Check if yaw alignment is complete - if so, allow descent even if target is temporarily lost
+        bool yaw_alignment_complete = copter.precland.yaw_align_enabled() && 
+            (get_cached_yaw_state() == static_cast<uint8_t>(AC_PrecLand::YawAlignState::DESCENDING) ||
+             get_cached_yaw_state() == static_cast<uint8_t>(AC_PrecLand::YawAlignState::FINAL_DESCENT));
 
-        if (doing_precision_landing) {
-            // prec landing is active
+        // Immediately pause descent when target becomes visible (even before EKF initialization)
+        // BUT: Allow descent if yaw alignment is complete (even if target temporarily lost)
+        if (target_is_visible && !doing_precision_landing && !yaw_alignment_complete) {
+            // Target is visible but EKF not yet initialized - pause descent
+            // BUT only if alignment is not complete yet
+            climb_rate_ms = 0.0f;
+        } else if (doing_precision_landing || yaw_alignment_complete) {
             Vector2p target_pos_ne_m;
             float target_error_m = 0.0f;
-            if (copter.precland.get_target_position_m(target_pos_ne_m)) {
+            bool have_target_pos = copter.precland.get_target_position_m(target_pos_ne_m);
+            
+            // FIX: If alignment complete but target lost, use last known position
+            if (!have_target_pos && yaw_alignment_complete) {
+                Vector3p last_target_pos_ned;
+                copter.precland.get_last_detected_landing_pos_NED_m(last_target_pos_ned);
+                target_pos_ne_m = last_target_pos_ned.xy();
+                // Set error to 0 since we're using last known position (assume we're there)
+                target_error_m = 0.0f;
+            } else if (have_target_pos) {
                 const Vector2p current_pos_ne_m = pos_control->get_pos_estimate_NED_m().xy();
-                // target is this many m away from the vehicle
                 target_error_m = (target_pos_ne_m - current_pos_ne_m).tofloat().length();
             }
-            // check if we should descend or not
+            
             const float max_horiz_pos_error_m = copter.precland.get_max_xy_error_before_descending_m();
             Vector3f target_pos_meas_ned_m;
             copter.precland.get_target_position_measurement_NED_m(target_pos_meas_ned_m);
-            if (target_error_m > max_horiz_pos_error_m && !is_zero(max_horiz_pos_error_m)) {
-                // doing precland but too far away from the obstacle
-                // do not descend
+            
+            // FIX: After alignment, allow descent even if target temporarily lost
+            // Only check XY error if we have valid target position
+            if (have_target_pos && target_error_m > max_horiz_pos_error_m && !is_zero(max_horiz_pos_error_m)) {
                 climb_rate_ms = 0.0f;
-            } else if (target_pos_meas_ned_m.z > 0.35 && target_pos_meas_ned_m.z < 2.0 && !copter.precland.do_fast_descend()) {
-                // very close to the ground and doing prec land, lets slow down to make sure we land on target
-                // compute desired descent velocity
-                const float precland_acceptable_error_m = 0.15;
-                const float precland_min_descent_speed_ms = 0.1;
+            } else if (target_pos_meas_ned_m.z > 0.35 && target_pos_meas_ned_m.z < 2.0 && !copter.precland.do_fast_descend() && have_target_pos) {
+                // Verwende Parameter statt Konstanten
+                const float precland_acceptable_error_m = copter.precland.get_acceptable_error_m();
+                const float precland_min_descent_speed_ms = copter.precland.get_min_descent_speed_ms();
                 const float max_descent_speed_ms = abs(g.land_speed_cms) * 0.005;
                 const float land_slowdown_ms = MAX(0.0f, target_error_m * (max_descent_speed_ms / precland_acceptable_error_m));
                 climb_rate_ms = MIN(-precland_min_descent_speed_ms, -max_descent_speed_ms + land_slowdown_ms);
             }
+            // FIX: If alignment complete but no target measurement, use normal descent rate
+            // This allows descent to continue even if target is temporarily lost
         }
 #endif
     }
 
-    // update altitude target and call position controller
     pos_control->D_set_pos_target_from_climb_rate_ms(climb_rate_ms, ignore_descent_limit);
     pos_control->D_update_controller();
 }
 
+#if AC_PRECLAND_ENABLED
+
+void Mode::update_yaw_align_cache()
+{
+    const uint32_t now_ms = AP_HAL::millis();
+    
+    // Only update once per control cycle
+    // But: if cache was invalidated, ALWAYS update
+    if (_cache_valid_this_cycle && (now_ms - _last_control_cycle_ms) < 3) {
+        return;
+    }
+    
+    // Neuer Control-Zyklus beginnt
+    _last_control_cycle_ms = now_ms;
+    _cache_valid_this_cycle = true;
+    
+    // Get rangefinder altitude
+    float rangefinder_alt_m = -1.0f;
+    if (copter.rangefinder_state.enabled && copter.rangefinder_state.alt_healthy) {
+        rangefinder_alt_m = copter.rangefinder_state.alt_m;
+    }
+    
+    // State Machine EINMAL aktualisieren
+    AC_PrecLand::YawAlignResult result = copter.precland.yaw_align_update(rangefinder_alt_m);
+    
+    // Ergebnisse cachen
+    _cached_yaw_allow_descent = result.allow_descent;
+    _cached_yaw_aligned = result.yaw_aligned;
+    _cached_desired_yaw_rad = result.desired_yaw_rad;
+    _cached_yaw_error_deg = result.yaw_error_deg;
+    _cached_yaw_state = static_cast<uint8_t>(result.state);
+    _yaw_cache_update_ms = now_ms;
+}
+
+// Getter mit automatischem Cache-Update
+bool Mode::get_cached_yaw_allow_descent() 
+{
+    update_yaw_align_cache();
+    return _cached_yaw_allow_descent;
+}
+
+float Mode::get_cached_desired_yaw_rad()
+{
+    update_yaw_align_cache();
+    return _cached_desired_yaw_rad;
+}
+
+uint8_t Mode::get_cached_yaw_state()
+{
+    update_yaw_align_cache();
+    return _cached_yaw_state;
+}
+
+void Mode::invalidate_yaw_align_cache()
+{
+    _cache_valid_this_cycle = false;
+    // Also set default values to safe state
+    _cached_yaw_allow_descent = false;  // Safe: descent not allowed
+    _cached_yaw_state = static_cast<uint8_t>(AC_PrecLand::YawAlignState::SEARCHING);
+}
+#endif  // AC_PRECLAND_ENABLED 
+
 void Mode::land_run_horizontal_control()
 {
     Vector2f vel_correction_ms;
+    
+    // STEP 1: Consider yaw alignment state
+    copter.ap.prec_land_active = false;
+#if AC_PRECLAND_ENABLED
+    // FIX: Also activate when target is visible (even before EKF initialization)
+    // This ensures position control is active immediately when target is detected
+    bool target_is_visible = copter.precland.target_visible();
+    bool target_is_acquired = copter.precland.target_acquired();
+    AC_PrecLand::YawAlignState yaw_state = copter.precland.get_yaw_align_state();
+    
+    // FIX: SIMPLIFIED LOGIC - Keep prec_land_active true whenever yaw alignment is active
+    // This prevents forward movement even when target is temporarily lost
+    // Once yaw alignment starts (any state except DISABLED), we want position control active
+    bool yaw_align_active = copter.precland.yaw_align_enabled() && 
+        (yaw_state != AC_PrecLand::YawAlignState::DISABLED);
+    
+    copter.ap.prec_land_active = !copter.ap.land_repo_active && 
+        (target_is_acquired || target_is_visible || yaw_align_active);
+#endif
 
-    // relax loiter target if we might be landed
-    if (copter.ap.land_complete_maybe) {
-        pos_control->NE_soften_for_landing();
-    }
-
-    // process pilot inputs
+    // ========================================================================
+    // STEP 2: Process pilot inputs (may change land_repo_active)
+    // ========================================================================
     if (rc().has_valid_input()) {
-        if ((g.throttle_behavior & THR_BEHAVE_HIGH_THROTTLE_CANCELS_LAND) != 0 && copter.rc_throttle_control_in_filter.get() > LAND_CANCEL_TRIGGER_THR){
+        if ((g.throttle_behavior & THR_BEHAVE_HIGH_THROTTLE_CANCELS_LAND) != 0 && 
+            copter.rc_throttle_control_in_filter.get() > LAND_CANCEL_TRIGGER_THR) {
             LOGGER_WRITE_EVENT(LogEvent::LAND_CANCELLED_BY_PILOT);
-            // exit land if throttle is high
             if (!set_mode(Mode::Number::LOITER, ModeReason::THROTTLE_LAND_ESCAPE)) {
                 set_mode(Mode::Number::ALT_HOLD, ModeReason::THROTTLE_LAND_ESCAPE);
             }
+            return;
         }
 
         if (g.land_repositioning) {
-            // apply SIMPLE mode transform to pilot inputs
             update_simple_mode();
-
-            // convert pilot input to reposition velocity
-            // use half maximum acceleration as the maximum velocity to ensure aircraft will
-            // stop from full reposition speed in less than 1 second.
-            const float max_pilot_vel_ms = wp_nav->get_wp_acceleration_mss() * 0.5;
+            const float max_pilot_vel_ms = wp_nav->get_wp_acceleration_mss() * 0.5f;
             vel_correction_ms = get_pilot_desired_velocity(max_pilot_vel_ms);
 
-            // record if pilot has overridden roll or pitch
             if (!vel_correction_ms.is_zero()) {
                 if (!copter.ap.land_repo_active) {
                     LOGGER_WRITE_EVENT(LogEvent::LAND_REPO_ACTIVE);
@@ -715,7 +845,6 @@ void Mode::land_run_horizontal_control()
                 copter.ap.land_repo_active = true;
 #if AC_PRECLAND_ENABLED
             } else {
-                // no override right now, check if we should allow precland
                 if (copter.precland.allow_precland_after_reposition()) {
                     copter.ap.land_repo_active = false;
                 }
@@ -724,43 +853,202 @@ void Mode::land_run_horizontal_control()
         }
     }
 
-    // this variable will be updated if prec land target is in sight and pilot isn't trying to reposition the vehicle
-    copter.ap.prec_land_active = false;
+    // ========================================================================
+    // STEP 3: Re-evaluate prec_land_active AFTER pilot input processing
+    // ========================================================================
 #if AC_PRECLAND_ENABLED
-    copter.ap.prec_land_active = !copter.ap.land_repo_active && copter.precland.target_acquired();
-    // run precision landing
+    // Re-evaluate after pilot input processing (variables already declared in STEP 1)
+    target_is_visible = copter.precland.target_visible();
+    target_is_acquired = copter.precland.target_acquired();
+    yaw_state = copter.precland.get_yaw_align_state();
+    
+    // FIX: SIMPLIFIED LOGIC - Keep prec_land_active true whenever yaw alignment is active
+    yaw_align_active = copter.precland.yaw_align_enabled() && 
+        (yaw_state != AC_PrecLand::YawAlignState::DISABLED);
+    
+    copter.ap.prec_land_active = !copter.ap.land_repo_active && 
+        (target_is_acquired || target_is_visible || yaw_align_active);
+#endif
+
+    // ========================================================================
+    // STEP 4: Relax loiter target if we might be landed
+    // ========================================================================
+    if (copter.ap.land_complete_maybe) {
+        pos_control->NE_soften_for_landing();
+    }
+
+    // ========================================================================
+    // STEP 5: Position control based on prec_land_active
+    // ========================================================================
+#if AC_PRECLAND_ENABLED
     if (copter.ap.prec_land_active) {
         Vector2p target_pos_ne_m;
         Vector2f target_vel_ne_ms;
-        if (!copter.precland.get_target_position_m(target_pos_ne_m)) {
-            target_pos_ne_m = pos_control->get_pos_estimate_NED_m().xy();
+        
+        // FIX: During yaw alignment, the target position estimate is UNRELIABLE
+        // because the camera may be pointing in a different direction.
+        // Only use target position during DESCENDING (active correction).
+        // In FINAL_DESCENT, just hold position and go straight down - the drone
+        // should already be well-centered from fine alignment, and any horizontal
+        // movement at low altitude risks losing the target.
+        bool alignment_complete = (yaw_state == AC_PrecLand::YawAlignState::DESCENDING);
+        
+        // Check if we have a valid target position (only trust it if alignment is complete)
+        bool have_valid_target_pos = false;
+        if (alignment_complete) {
+            // After alignment, use target position for precision landing
+            have_valid_target_pos = copter.precland.get_target_position_m(target_pos_ne_m);
+            
+            // SANITY CHECK: Verify the target position measurement makes sense
+            // Now that we use rangefinder for distance, meas_alt should be close to RF alt
+            // Only reject if they're DRASTICALLY different (factor of 5+)
+            if (have_valid_target_pos) {
+                Vector3f target_meas;
+                copter.precland.get_target_position_measurement_NED_m(target_meas);
+                float meas_alt_m = target_meas.z;  // positive = below drone
+                float rf_alt_m = copter.rangefinder_state.alt_m;
+                
+                // Check for gross mismatch (factor of 5 difference)
+                bool alt_mismatch = false;
+                if (copter.rangefinder_state.alt_healthy && rf_alt_m > 1.0f) {
+                    if (meas_alt_m < rf_alt_m * 0.2f || meas_alt_m > rf_alt_m * 5.0f) {
+                        alt_mismatch = true;
+                    }
+                }
+                
+                if (alt_mismatch) {
+                    // Target position is unreliable - don't use it
+                    have_valid_target_pos = false;
+                    static uint32_t last_sanity_warn_ms = 0;
+                    if ((AP_HAL::millis() - last_sanity_warn_ms) > 5000) {
+                        last_sanity_warn_ms = AP_HAL::millis();
+                        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "PrecLand: Alt mismatch! Meas=%.1fm RF=%.1fm", 
+                                      (double)meas_alt_m, (double)rf_alt_m);
+                    }
+                }
+            }
         }
-         // get the velocity of the target
-        copter.precland.get_target_velocity_ms(pos_control->get_vel_estimate_NED_ms().xy(), target_vel_ne_ms);
+        
+        if (!have_valid_target_pos) {
+            // During alignment OR no valid target: Position control strategy
+            static Vector2p fine_align_ref_pos;
+            static bool fine_align_ref_valid = false;
+            
+            bool in_fine_phase = (yaw_state == AC_PrecLand::YawAlignState::FINE_ALIGNING ||
+                                  yaw_state == AC_PrecLand::YawAlignState::FINE_HOLDING ||
+                                  yaw_state == AC_PrecLand::YawAlignState::FINAL_DESCENT);
+            
+            if (in_fine_phase) {
+                // WIND-ROBUST APPROACH: Try to use target position with sanity limits
+                Vector2p target_pos_temp;
+                bool have_target = copter.precland.get_target_position_m(target_pos_temp);
+                
+                if (!fine_align_ref_valid) {
+                    // Save reference position at entry
+                    fine_align_ref_pos = pos_control->get_pos_estimate_NED_m().xy();
+                    fine_align_ref_valid = true;
+                }
+                
+                if (have_target) {
+                    // Check if target correction is reasonable
+                    // PLND_FINE_CORR limits max correction to prevent oscillation while allowing wind compensation
+                    const float max_correction_m = copter.precland.get_fine_correction_max_m();
+                    
+                    if (is_zero(max_correction_m)) {
+                        // No limit - use full target position
+                        target_pos_ne_m = target_pos_temp;
+                    } else {
+                        Vector2f correction = (target_pos_temp - fine_align_ref_pos).tofloat();
+                        float correction_dist = correction.length();
+                        
+                        if (correction_dist <= max_correction_m || correction_dist < 0.001f) {
+                            // Small correction or negligible - use target position (wind compensation)
+                            target_pos_ne_m = target_pos_temp;
+                        } else {
+                            // Large correction - limit it (probably noise/error)
+                            // SAFETY: Only normalize if length is significant to avoid NaN
+                            correction *= (max_correction_m / correction_dist);
+                            target_pos_ne_m = fine_align_ref_pos + correction.topostype();
+                        }
+                    }
+                } else {
+                    // No target - hold reference position
+                    target_pos_ne_m = fine_align_ref_pos;
+                }
+            } else {
+                // For other states (SEARCHING, COARSE_ALIGNING, etc.): use current position
+                fine_align_ref_valid = false;
+                target_pos_ne_m = pos_control->get_pos_estimate_NED_m().xy();
+            }
+            target_vel_ne_ms.zero();  // Zero velocity to hold position
+        } else {
+            // Alignment complete and target acquired - use actual target position
+            copter.precland.get_target_velocity_ms(pos_control->get_vel_estimate_NED_ms().xy(), target_vel_ne_ms);
+        }
 
         Vector2f accel_zero;
-        // target vel will remain zero if landing target is stationary
         pos_control->input_pos_vel_accel_NE_m(target_pos_ne_m, target_vel_ne_ms, accel_zero);
 
-        // ====================================================================
-        // Precision Landing Yaw Control
-        // ====================================================================
+        // =============================================================================
+        // Yaw control with XY-Gate: only activate when XY tolerance is met
+        // =============================================================================
         float target_yaw_rad;
-        if (copter.precland.get_target_yaw_rad(target_yaw_rad)) {
-            // Valid target yaw available - command vehicle to align
-            auto_yaw.set_precland_target_yaw_rad(target_yaw_rad);
-            if (auto_yaw.mode() != AutoYaw::Mode::PRECLAND_TARGET) {
-                auto_yaw.set_mode(AutoYaw::Mode::PRECLAND_TARGET);
+        bool yaw_align_enabled = copter.precland.yaw_align_enabled();
+        bool xy_gate_enabled = copter.precland.yaw_xy_gate_enabled();
+        
+        if (yaw_align_enabled) {
+            // Check XY error if gate is enabled
+            bool xy_within_tolerance = true;
+            if (xy_gate_enabled) {
+                // target_pos_ne_m wurde bereits oben deklariert, verwende es hier
+                const Vector2p current_pos_ne_m = pos_control->get_pos_estimate_NED_m().xy();
+                float target_error_m = (target_pos_ne_m - current_pos_ne_m).tofloat().length();
+                const float max_horiz_pos_error_m = copter.precland.get_max_xy_error_before_descending_m();
+                xy_within_tolerance = (target_error_m <= max_horiz_pos_error_m || is_zero(max_horiz_pos_error_m));
+            }
+            
+            // Only activate yaw alignment if XY-Gate is satisfied (or disabled)
+            if (xy_within_tolerance && copter.precland.get_target_yaw_rad(target_yaw_rad)) {
+                float desired_yaw = get_cached_desired_yaw_rad();
+                uint8_t state = get_cached_yaw_state();
+                
+                // FIX: Check if target is still visible/acquired before enabling yaw control
+                bool target_ok = copter.precland.target_visible() || copter.precland.target_acquired();
+                
+                // Only control yaw when in an active alignment state AND target is OK
+                bool yaw_control_active = target_ok && 
+                    (state != static_cast<uint8_t>(AC_PrecLand::YawAlignState::DISABLED) && 
+                     state != static_cast<uint8_t>(AC_PrecLand::YawAlignState::SEARCHING));
+                
+                if (yaw_control_active) {
+                    auto_yaw.set_precland_target_yaw_rad(desired_yaw);
+                    if (auto_yaw.mode() != AutoYaw::Mode::PRECLAND_TARGET) {
+                        auto_yaw.set_mode(AutoYaw::Mode::PRECLAND_TARGET);
+                    }
+                } else {
+                    // SEARCHING state or target lost - hold yaw immediately
+                    // FIX: This prevents feedback loops when target is lost during alignment
+                    if (auto_yaw.mode() == AutoYaw::Mode::PRECLAND_TARGET) {
+                        auto_yaw.invalidate_precland_target_yaw();
+                        auto_yaw.set_mode(AutoYaw::Mode::HOLD);
+                    }
+                }
+            } else {
+                // XY-Gate not satisfied or no valid target yaw - hold yaw
+                if (auto_yaw.mode() == AutoYaw::Mode::PRECLAND_TARGET) {
+                    auto_yaw.invalidate_precland_target_yaw();
+                    auto_yaw.set_mode(AutoYaw::Mode::HOLD);
+                }
             }
         } else {
-            // Target yaw lost or timed out - fall back to hold
+            // Yaw-Alignment deaktiviert
             if (auto_yaw.mode() == AutoYaw::Mode::PRECLAND_TARGET) {
                 auto_yaw.invalidate_precland_target_yaw();
                 auto_yaw.set_mode(AutoYaw::Mode::HOLD);
             }
         }
     } else {
-        // Precision landing not active - ensure we exit PRECLAND_TARGET mode
+        // Precision landing not active
         if (auto_yaw.mode() == AutoYaw::Mode::PRECLAND_TARGET) {
             auto_yaw.invalidate_precland_target_yaw();
             auto_yaw.set_mode(AutoYaw::Mode::HOLD);
@@ -773,27 +1061,39 @@ void Mode::land_run_horizontal_control()
         pos_control->input_vel_accel_NE_m(vel_correction_ms, accel);
     }
 
-    // run pos controller
     pos_control->NE_update_controller();
     Vector3f thrust_vector = pos_control->get_thrust_vector();
 
-    // call attitude controller
     attitude_control->input_thrust_vector_heading(thrust_vector, auto_yaw.get_heading());
-
 }
 
 // run normal or precision landing (if enabled)
-// pause_descent is true if vehicle should not descend
 void Mode::land_run_normal_or_precland(bool pause_descent)
 {
 #if AC_PRECLAND_ENABLED
     if (pause_descent || !copter.precland.enabled()) {
-        // we don't want to start descending immediately or prec land is disabled
-        // in both cases just run simple land controllers
         land_run_horiz_and_vert_control(pause_descent);
+        return;
+    }
+    
+    // =============================================================================
+    // KRITISCH: Cache MUSS am Anfang aktualisiert werden!
+    // =============================================================================
+    update_yaw_align_cache();  // ← NEU: Expliziter Aufruf
+    
+    // Now we can safely read the cache
+    bool yaw_pause = false;
+    if (copter.precland.yaw_align_enabled()) {
+        // Now it's safe to read the cache directly
+        // (it was just updated)
+        if (!_cached_yaw_allow_descent) {
+            yaw_pause = true;
+        }
+    }
+    
+    if (yaw_pause) {
+        land_run_horiz_and_vert_control(true);
     } else {
-        // prec land is enabled and we have not paused descent
-        // the state machine takes care of the entire prec landing procedure
         precland_run();
     }
 #else

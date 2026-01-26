@@ -182,6 +182,109 @@ const AP_Param::GroupInfo AC_PrecLand::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("OPTIONS", 17, AC_PrecLand, _options, 0),
 
+    // @Param: YAW_TGT
+    // @DisplayName: Yaw Alignment Target Angle
+    // @Description: Desired yaw offset from landing target orientation in centidegrees. 0 means drone nose points same direction as tag's X-axis. Set to -1 to disable yaw alignment feature entirely.
+    // @Values: -1:Disabled
+    // @Range: -18000 18000
+    // @Units: cdeg
+    // @User: Advanced
+    AP_GROUPINFO("YAW_TGT", 19, AC_PrecLand, _yaw_align_target_cd, 0),
+    
+    // @Param: YAW_COARSE
+    // @DisplayName: Coarse Yaw Alignment Tolerance  
+    // @Description: Yaw error tolerance for coarse alignment phase in centidegrees. Drone will not descend until yaw is within this tolerance.
+    // @Range: 500 9000
+    // @Units: cdeg
+    // @User: Advanced
+    AP_GROUPINFO("YAW_COARSE", 20, AC_PrecLand, _yaw_coarse_tol_cd, 2000),
+    
+    // @Param: YAW_FINE
+    // @DisplayName: Fine Yaw Alignment Tolerance
+    // @Description: Yaw error tolerance for fine alignment phase in centidegrees before final descent.
+    // @Range: 100 2000
+    // @Units: cdeg
+    // @User: Advanced
+    AP_GROUPINFO("YAW_FINE", 21, AC_PrecLand, _yaw_fine_tol_cd, 500),
+    
+    // @Param: YAW_TIME
+    // @DisplayName: Yaw Alignment Hold Time
+    // @Description: Time in seconds that yaw must be held within tolerance before proceeding.
+    // @Range: 1 10
+    // @Units: s
+    // @User: Advanced
+    AP_GROUPINFO("YAW_TIME", 22, AC_PrecLand, _yaw_hold_time_s, 5.0f),
+    
+    // @Param: YAW_FALT
+    // @DisplayName: Fine Yaw Alignment Altitude
+    // @Description: Altitude above ground (via rangefinder) at which fine yaw alignment begins. Set 0 to disable.
+    // @Range: 0 10
+    // @Units: m
+    // @User: Advanced
+    AP_GROUPINFO("YAW_FALT", 23, AC_PrecLand, _yaw_fine_alt_m, 2.0f),
+    
+    // @Param: YAW_RATE
+    // @DisplayName: Maximum Yaw Rate for Alignment
+    // @Description: Maximum yaw rate in deg/s during precision landing yaw alignment. Lower values reduce risk of losing target during rotation.
+    // @Range: 10 90
+    // @Units: deg/s
+    // @User: Advanced
+    AP_GROUPINFO("YAW_RATE", 24, AC_PrecLand, _yaw_rate_max_dps, 20),
+    
+    // @Param: YAW_STABLE
+    // @DisplayName: Yaw Stable Time
+    // @Description: Time in seconds that yaw must be stable within tolerance before descent continues after alignment.
+    // @Range: 0 10
+    // @Units: s
+    // @User: Advanced
+    AP_GROUPINFO("YAW_STABLE", 25, AC_PrecLand, _yaw_stable_time_s, 2.0f),
+    
+    // @Param: ACC_ERR
+    // @DisplayName: Acceptable XY Error
+    // @Description: Acceptable horizontal position error in meters for slow descent during precision landing.
+    // @Range: 0.05 1.0
+    // @Units: m
+    // @User: Advanced
+    AP_GROUPINFO("ACC_ERR", 26, AC_PrecLand, _acceptable_error_m, 0.15f),
+    
+    // @Param: MIN_DSPD
+    // @DisplayName: Minimum Descent Speed
+    // @Description: Minimum descent speed in m/s during precision landing when close to target.
+    // @Range: 0.05 0.5
+    // @Units: m/s
+    // @User: Advanced
+    AP_GROUPINFO("MIN_DSPD", 27, AC_PrecLand, _min_descent_speed_ms, 0.1f),
+    
+    // @Param: YAW_XY_GATE
+    // @DisplayName: Yaw Alignment XY Gate
+    // @Description: Enable gate: Yaw alignment only starts when XY position error is within tolerance. Set to 0 to disable gate (yaw aligns immediately when target detected).
+    // @Values: 0:Disabled, 1:Enabled
+    // @User: Advanced
+    AP_GROUPINFO("YAW_XY_GATE", 28, AC_PrecLand, _yaw_xy_gate, 1),
+    
+    // @Param: YAW_MAXALT
+    // @DisplayName: Yaw Alignment Maximum Altitude
+    // @Description: Maximum altitude (m) at which yaw alignment starts. If drone is higher, it will descend first before starting yaw alignment. This prevents losing the target during rotation at high altitude. Set to 0 to disable (start alignment immediately).
+    // @Range: 0 20
+    // @Units: m
+    // @User: Advanced
+    AP_GROUPINFO("YAW_MAXALT", 29, AC_PrecLand, _yaw_max_alt_m, 5.0f),
+
+    // @Param: YAW_FILT
+    // @DisplayName: Yaw Filter Alpha
+    // @Description: Low-pass filter coefficient for target yaw smoothing. Higher values mean more filtering (slower response, less oscillation). 0 = no filtering, 1 = maximum filtering. Typical range 0.3-0.6.
+    // @Range: 0 0.9
+    // @User: Advanced
+    AP_GROUPINFO("YAW_FILT", 30, AC_PrecLand, _yaw_filter_alpha, 0.5f),
+
+    // @Param: FINE_CORR
+    // @DisplayName: Fine Alignment Maximum Correction
+    // @Description: Maximum horizontal correction allowed during fine alignment and final descent phases. Limits position corrections to prevent oscillation while still allowing wind compensation. Set to 0 to disable correction limiting (use full target position).
+    // @Range: 0 0.5
+    // @Units: m
+    // @User: Advanced
+    AP_GROUPINFO("FINE_CORR", 31, AC_PrecLand, _fine_correction_max_m, 0.15f),
+
     // @Param{Rover,Copter}: ORIENT
     // @DisplayName: Camera Orientation
     // @Description: Orientation of camera/sensor on body
@@ -221,6 +324,15 @@ void AC_PrecLand::init(uint16_t update_rate_hz)
     _target_yaw_rad = 0.0f;
     _target_yaw_valid = false;
     _target_yaw_timestamp_ms = 0;
+
+    // Initialize yaw alignment state machine
+    _yaw_align_state = YawAlignState::DISABLED;
+    _yaw_align_start_ms = 0;
+    _yaw_hold_start_ms = 0;
+    _yaw_stable_start_ms = 0;
+    _yaw_in_tolerance = false;
+    _coarse_align_complete = false;
+    _last_desired_yaw_rad = 0.0f;
 
     // default health to false
     _backend = nullptr;
@@ -419,6 +531,12 @@ bool AC_PrecLand::target_acquired()
     return _target_acquired;
 }
 
+// returns true immediately when a backend measurement is present (without waiting for EKF initialization)
+bool AC_PrecLand::target_visible() const
+{
+    return (AP_HAL::millis() - _last_backend_los_meas_ms) < LANDING_TARGET_TIMEOUT_MS;
+}
+
 // returns target position relative to the EKF origin
 bool AC_PrecLand::get_target_position_m(Vector2p& ret)
 {
@@ -503,7 +621,7 @@ void AC_PrecLand::handle_msg(const mavlink_landing_target_t &packet, uint32_t ti
     // we extract the yaw angle to align the vehicle during landing.
     //
     // Quaternion format: q[0]=w, q[1]=x, q[2]=y, q[3]=z
-    // For a pure yaw rotation (from OpenMV): q = [cos(θ/2), 0, 0, sin(θ/2)]
+    // For a pure yaw rotation (from OpenMV): q = [cos(Î¸/2), 0, 0, sin(Î¸/2)]
     // ========================================================================
 
     const float q_w = packet.q[0];
@@ -523,17 +641,42 @@ void AC_PrecLand::handle_msg(const mavlink_landing_target_t &packet, uint32_t ti
         //
         // For a pure Z-rotation this simplifies to: yaw = 2*atan2(z, w)
         // But we use the general formula for robustness
-        float yaw_rad = atan2f(2.0f * (q_w * q_z + q_x * q_y),
-                               1.0f - 2.0f * (q_y * q_y + q_z * q_z));
+        float yaw_body_rad = atan2f(2.0f * (q_w * q_z + q_x * q_y),
+                                    1.0f - 2.0f * (q_y * q_y + q_z * q_z));
 
-        // Apply sensor yaw alignment if configured
-        // _yaw_align_cd is the yaw angle from body x-axis to sensor x-axis in centidegrees
-        if (!is_zero(_yaw_align_cd)) {
-            yaw_rad += radians(_yaw_align_cd * 0.01f);
+        // =================================================================
+        // CRITICAL FIX: Convert yaw from Body frame to NED frame!
+        // The quaternion from the camera gives us the tag's yaw RELATIVE to the camera/body.
+        // We need the ABSOLUTE tag yaw in NED frame.
+        // 
+        // target_yaw_NED = target_yaw_body + vehicle_yaw
+        //
+        // This ensures that when the drone rotates, the computed target_yaw_NED
+        // stays constant (because the tag on the ground doesn't move).
+        // =================================================================
+        float vehicle_yaw_rad = AP::ahrs().get_yaw();
+        float yaw_ned_rad = wrap_PI(yaw_body_rad + vehicle_yaw_rad);
+
+        // =================================================================
+        // FIX: ALWAYS set yaw when valid quaternion is received!
+        // The yaw data is needed for alignment to start.
+        // Previously, we only set yaw if target_acquired() or alignment active,
+        // but that created a chicken-and-egg problem: alignment needs yaw,
+        // but yaw was only set if alignment was active.
+        // =================================================================
+        if (true) {  // Always process valid quaternion
+            // Apply sensor yaw alignment if configured
+            // _yaw_align_cd is the yaw angle from body x-axis to sensor x-axis in centidegrees
+            if (!is_zero(_yaw_align_cd)) {
+                yaw_ned_rad += radians(_yaw_align_cd * 0.01f);
+                yaw_ned_rad = wrap_PI(yaw_ned_rad);
+            }
+
+            // Store the target yaw orientation (now in NED frame)
+            set_target_yaw_rad(yaw_ned_rad, timestamp_ms);
+            
+            // Yaw conversion debug removed - enable via LOGGING if needed
         }
-
-        // Store the target yaw orientation
-        set_target_yaw_rad(yaw_rad, timestamp_ms);
     }
 }
 
@@ -568,7 +711,7 @@ void AC_PrecLand::run_estimator(float rangefinder_alt_m, bool rangefinder_alt_va
             // Update if a new Line-Of-Sight measurement is available
             if (construct_pos_meas_using_rangefinder(rangefinder_alt_m, rangefinder_alt_valid)) {
                 if (!_estimator_initialized) {
-                    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "PrecLand: Target Found");
+                    // Note: "Init Complete" message is sent elsewhere
                     _estimator_initialized = true;
                 }
                 _target_pos_rel_est_ne_m.x = _target_pos_rel_meas_ned_m.x;
@@ -600,8 +743,7 @@ void AC_PrecLand::run_estimator(float rangefinder_alt_m, bool rangefinder_alt_va
             if (construct_pos_meas_using_rangefinder(rangefinder_alt_m, rangefinder_alt_valid)) {
                 float xy_pos_var = sq(_target_pos_rel_meas_ned_m.z*(0.01f + 0.01f*AP::ahrs().get_gyro().length()) + 0.02f);
                 if (!_estimator_initialized) {
-                    // Inform the user landing target has been found
-                    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "PrecLand: Target Found");
+                    // Note: "Init Complete" message is sent after EKF is ready
                     // start init of EKF. We will let the filter consume the data for a while before it available for consumption
                     // reset filter state
                     if (_inertial_data_delayed->inertialNavVelocityValid) {
@@ -734,14 +876,32 @@ bool AC_PrecLand::construct_pos_meas_using_rangefinder(float rangefinder_alt_m, 
                 // take its height into account while calculating distance
                 cam_pos_ned_m = _inertial_data_delayed->Tbn * _cam_offset_m;
             }
-            if (_backend->distance_to_target() > 0.0f) {
-                // sensor has provided distance to landing target
+            // FIX: ALWAYS use rangefinder for distance calculation!
+            // The backend's distance_to_target() is based on tag size which is often wrong.
+            // Rangefinder is much more reliable for altitude/distance measurement.
+            // Only use backend distance if rangefinder is not available.
+            if (!rangefinder_alt_valid && _backend->distance_to_target() > 0.0f) {
+                // sensor has provided distance to landing target (fallback when no rangefinder)
                 dist_to_target_m = _backend->distance_to_target();
+                GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "PrecLand: Using backend distance %.1fm (no RF)", (double)dist_to_target_m);
             } else {
                 // sensor only knows the horizontal location of the landing target
                 // rely on rangefinder for the vertical target
                 dist_to_target_along_av_m = MAX(rangefinder_alt_m - cam_pos_ned_m.projected(approach_vector_NED_m).length(), 0.0f);
-                dist_to_target_m = dist_to_target_along_av_m / target_vec_unit_ned.projected(approach_vector_NED_m).length();
+                
+                // SAFETY: Prevent division by zero or very small values
+                float projection_length = target_vec_unit_ned.projected(approach_vector_NED_m).length();
+                if (projection_length < 0.01f) {
+                    // Target vector is nearly perpendicular to approach vector - use rangefinder directly
+                    dist_to_target_m = rangefinder_alt_m;
+                } else {
+                    dist_to_target_m = dist_to_target_along_av_m / projection_length;
+                }
+                
+                // SAFETY: Sanity check - distance should never be negative or extremely large
+                if (!isfinite(dist_to_target_m) || dist_to_target_m < 0.0f || dist_to_target_m > 1000.0f) {
+                    return false;  // Invalid measurement
+                }
             }
 
             // Compute camera position relative to IMU
@@ -892,6 +1052,526 @@ void AC_PrecLand::Write_Precland()
     AP::logger().WriteBlock(&pkt, sizeof(pkt));
 }
 
+// =============================================================================
+// Yaw Alignment State Machine Implementation
+// =============================================================================
+
+void AC_PrecLand::yaw_align_init()
+{
+    // Check if yaw alignment is enabled via parameter
+    // Value of -1 explicitly disables the feature
+    if (_yaw_align_target_cd.get() == -1) {
+        _yaw_align_state = YawAlignState::DISABLED;
+        _coarse_align_complete = false;
+        _yaw_in_tolerance = false;
+        _yaw_hold_start_ms = 0;
+        _yaw_align_start_ms = 0;
+        _target_lost_timestamp_ms = 0;
+        _last_desired_yaw_rad = 0.0f;
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "PrecLand: Yaw align disabled");
+        return;
+    }
+    
+    _yaw_align_state = YawAlignState::SEARCHING;
+    _yaw_align_start_ms = AP_HAL::millis();
+    _yaw_hold_start_ms = 0;
+    _yaw_stable_start_ms = 0;
+    _yaw_in_tolerance = false;
+    _coarse_align_complete = false;
+    _target_lost_timestamp_ms = 0;          
+    _last_desired_yaw_rad = AP::ahrs().get_yaw_rad();
+    
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "PrecLand: Yaw align active, searching");
+}
+
+bool AC_PrecLand::get_desired_yaw_for_alignment(float &yaw_rad) const
+{
+    // First check if we have a valid target yaw from the sensor
+    float target_yaw;
+    if (!get_target_yaw_rad(target_yaw)) {
+        return false;
+    }
+    
+    // Add the user-configured alignment offset
+    float offset_rad = radians(_yaw_align_target_cd.get() * 0.01f);
+    
+    // Calculate desired yaw: target orientation + user offset
+    // The result is the yaw the drone should point to be "aligned" with the target
+    yaw_rad = wrap_PI(target_yaw + offset_rad);
+    
+    return true;
+}
+
+float AC_PrecLand::get_yaw_alignment_error_rad() const
+{
+    float desired_yaw;
+    if (!get_desired_yaw_for_alignment(desired_yaw)) {
+        return 0.0f;
+    }
+    
+    // Get current vehicle yaw
+    const float current_yaw = AP::ahrs().get_yaw_rad();
+    
+    // Calculate error (positive = need to turn right/clockwise)
+    float error = wrap_PI(desired_yaw - current_yaw);
+    
+    return error;
+}
+
+bool AC_PrecLand::yaw_within_tolerance(float tolerance_cd) const
+{
+    float error_rad = get_yaw_alignment_error_rad();
+    float error_cd = degrees(fabsf(error_rad)) * 100.0f;
+    return error_cd <= tolerance_cd;
+}
+
+AC_PrecLand::YawAlignResult AC_PrecLand::yaw_align_update(float rangefinder_alt_m)
+{
+    YawAlignResult result;
+    result.allow_descent = true;
+    result.yaw_aligned = false;
+    result.desired_yaw_rad = _last_desired_yaw_rad;
+    result.yaw_error_deg = 0.0f;
+    result.state = _yaw_align_state;
+    
+    // SAFETY: If feature was disabled via parameter change, reset state machine
+    if (!yaw_align_enabled() && _yaw_align_state != YawAlignState::DISABLED) {
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "PrecLand: Yaw align disabled via parameter");
+        _yaw_align_state = YawAlignState::DISABLED;
+        result.state = YawAlignState::DISABLED;
+        return result;
+    }
+    
+    // If disabled, always allow descent
+    if (_yaw_align_state == YawAlignState::DISABLED) {
+        return result;
+    }
+    
+    const uint32_t now_ms = AP_HAL::millis();
+    
+    // SAFETY: Validate and constrain parameters to sensible ranges
+    const float hold_time_ms = MAX(_yaw_hold_time_s.get(), 0.1f) * 1000.0f;  // Min 100ms
+    const float coarse_tol_cd = MAX(_yaw_coarse_tol_cd.get(), 100.0f);       // Min 1 degree
+    const float fine_tol_cd = MAX(_yaw_fine_tol_cd.get(), 50.0f);            // Min 0.5 degree
+    const float fine_alt_m = MAX(_yaw_fine_alt_m.get(), 0.0f);               // Min 0m (disabled)
+    const uint32_t ALIGNMENT_TIMEOUT_MS = 30000;
+    
+    // Get target yaw if available
+    float desired_yaw;
+    bool have_target_yaw = get_desired_yaw_for_alignment(desired_yaw);
+    
+    // Periodic debug removed - state changes are logged individually
+    
+    // Calculate current yaw error
+    float yaw_error_rad = get_yaw_alignment_error_rad();
+    result.yaw_error_deg = degrees(yaw_error_rad);
+    
+    // Check tolerances
+    bool within_coarse = yaw_within_tolerance(coarse_tol_cd);
+    bool within_fine = yaw_within_tolerance(fine_tol_cd);
+    
+    // State machine
+    switch (_yaw_align_state) {
+        
+    case YawAlignState::DISABLED:
+        result.allow_descent = true;
+        break;
+        
+    case YawAlignState::SEARCHING: {
+        result.allow_descent = true;
+        
+        // =================================================================
+        // FIX: Check for fresh backend measurement instead of target_acquired()
+        // This allows immediate reaction to target detection without waiting
+        // for EKF initialization (2 second delay)
+        // =================================================================
+        bool have_fresh_measurement = target_visible();
+        
+        // =================================================================
+        // NEW: Check altitude limit for yaw alignment
+        // If we're too high, continue descending instead of starting alignment
+        // This prevents losing the target during rotation at high altitude
+        // =================================================================
+        bool altitude_ok = true;
+        if (!is_zero(_yaw_max_alt_m.get())) {
+            // Get current altitude from target measurement (z is positive down)
+            Vector3f target_pos_meas;
+            get_target_position_measurement_NED_m(target_pos_meas);
+            float current_alt_m = target_pos_meas.z;  // positive = below drone
+            
+            if (current_alt_m > _yaw_max_alt_m.get()) {
+                // Too high - continue descending (no message to reduce spam)
+                altitude_ok = false;
+            }
+        }
+        
+        // =================================================================
+        // FIXED LOGIC:
+        // 1. If too high -> descent allowed, don't start alignment yet
+        // 2. If altitude OK and have measurement + yaw -> start alignment
+        // 3. If altitude OK and have measurement but no yaw -> pause and wait
+        // =================================================================
+        if (!altitude_ok) {
+            // Too high - just descend, don't do anything else
+            result.allow_descent = true;
+            // Message already printed above
+        } else if (have_fresh_measurement && have_target_yaw) {
+            // Altitude OK, have target and yaw -> START ALIGNMENT!
+            _yaw_align_state = YawAlignState::COARSE_ALIGNING;
+            _yaw_align_start_ms = now_ms;
+            _target_lost_timestamp_ms = 0;
+            _yaw_in_tolerance = false;  // Reset tolerance tracker
+            _yaw_hold_start_ms = 0;
+            _yaw_stable_start_ms = 0;
+            
+            // Set desired yaw
+            result.desired_yaw_rad = desired_yaw;
+            _last_desired_yaw_rad = desired_yaw;
+            
+            // Pause descent during alignment
+            result.allow_descent = false;
+            
+            result.state = YawAlignState::COARSE_ALIGNING;
+            GCS_SEND_TEXT(MAV_SEVERITY_INFO, "PrecLand: Target found, coarse aligning (descent paused)");
+        } else if (have_fresh_measurement && !have_target_yaw) {
+            // Altitude OK, have target but NO yaw -> wait silently
+            result.allow_descent = false;
+        }
+        // else: no measurement -> allow_descent stays true (default)
+        break;
+    }
+        
+    case YawAlignState::COARSE_ALIGNING: {
+        result.allow_descent = false;  // Default: NO descent!
+        
+        if ((now_ms - _yaw_align_start_ms) > ALIGNMENT_TIMEOUT_MS) {
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "PrecLand: Yaw align timeout");
+            _yaw_align_state = YawAlignState::DESCENDING;
+            result.allow_descent = true;
+            break;
+        }
+        
+        // =================================================================
+        // Target loss handling: If target is lost, descend slowly to re-acquire it
+        // =================================================================
+        // FIX: Check both target_acquired() and target_visible() for consistency
+        bool target_still_visible = target_visible();
+        if (!target_acquired() && !target_still_visible) {
+            // FIX: If alignment is already complete (yaw was in tolerance), don't go back to SEARCHING
+            // Instead, transition to DESCENDING to allow descent even if target is lost
+            // Check if alignment was successful by checking if hold timer was started
+            // This works even if _yaw_in_tolerance was reset due to missing target yaw
+            if (_yaw_hold_start_ms > 0) {
+                // Alignment was successful (hold timer was started) - transition to DESCENDING instead of SEARCHING
+                _yaw_align_state = YawAlignState::DESCENDING;
+                _target_lost_timestamp_ms = 0;
+                // Keep _yaw_in_tolerance true if it was true, don't reset it
+                result.allow_descent = true;
+                result.desired_yaw_rad = _last_desired_yaw_rad;
+                result.state = YawAlignState::DESCENDING;
+                GCS_SEND_TEXT(MAV_SEVERITY_INFO, "PrecLand: Target lost after alignment, continuing descent");
+                break;
+            }
+            
+            if (_target_lost_timestamp_ms == 0) {
+                _target_lost_timestamp_ms = now_ms;
+                GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "PrecLand: Target lost during alignment");
+                // FIX: Don't change desired_yaw when target is lost - keep last known value
+                // This prevents yaw jumps that cause oscillation
+            }
+            
+            // FIX: Keep desired_yaw at last known value, don't update it
+            // This prevents feedback loops when target is temporarily lost
+            result.desired_yaw_rad = _last_desired_yaw_rad;
+            
+            // =================================================================
+            // NEW: Allow SLOW descent when target is lost during alignment
+            // This helps re-acquire the target by getting closer to it
+            // The drone holds yaw (no rotation) and descends slowly
+            // =================================================================
+            float yaw_rate_dps = fabsf(degrees(AP::ahrs().get_yaw_rate_earth()));
+            if (yaw_rate_dps < 5.0f) {
+                // Rotation has stopped - allow slow descent to find target again
+                result.allow_descent = true;  // Allow descent to get closer to target
+                // Only print once
+                static uint32_t last_descent_msg_ms = 0;
+                if ((now_ms - last_descent_msg_ms) > 3000) {
+                    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "PrecLand: Target lost, descending slowly to re-acquire");
+                    last_descent_msg_ms = now_ms;
+                }
+            } else {
+                // Still rotating - wait for rotation to stop first
+                result.allow_descent = false;
+                // Wait silently for rotation to stop
+            }
+            
+        // Use PLND_TIMEOUT parameter for configurable wait time
+        const uint32_t target_lost_timeout_ms = MAX(_retry_timeout_s.get(), 2.0f) * 1000;
+        if ((now_ms - _target_lost_timestamp_ms) > target_lost_timeout_ms) {
+            _yaw_align_state = YawAlignState::SEARCHING;
+            _target_lost_timestamp_ms = 0;
+            _yaw_in_tolerance = false;
+            _yaw_stable_start_ms = 0;
+            
+            // Only allow descent when rotation rate < 5 deg/s
+            if (yaw_rate_dps < 5.0f) {
+                result.allow_descent = true;
+                GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "PrecLand: Target lost, back to searching");
+            } else {
+                result.allow_descent = false;
+                // Wait silently for rotation to stop
+            }
+            } else {
+                // FIX: Don't allow descent while waiting for rotation to stop
+                result.allow_descent = false;
+            }
+            // While waiting for target: descent PAUSED, yaw should be set to HOLD
+            result.state = YawAlignState::SEARCHING;
+            break;
+        }
+        
+        // FIX: If target was lost but is now visible again, reset lost timestamp
+        if (!target_acquired() && target_still_visible) {
+            // Target visible but EKF not initialized yet - keep waiting
+            // Don't reset lost timestamp, but also don't go to SEARCHING
+            // Keep in COARSE_ALIGNING state but pause yaw control
+            result.desired_yaw_rad = _last_desired_yaw_rad;  // Keep last known yaw
+            result.allow_descent = false;
+            result.state = _yaw_align_state;
+            break;
+        }
+        
+        // Target is visible - reset lost timer
+        _target_lost_timestamp_ms = 0;
+        
+        // Update desired yaw: use measured value if available, otherwise use last known value
+        if (have_target_yaw) {
+            result.desired_yaw_rad = desired_yaw;
+            _last_desired_yaw_rad = desired_yaw;
+        } else {
+            // FIX: Use last known desired yaw instead of current vehicle yaw
+            // This prevents yaw jumps that cause oscillation
+            result.desired_yaw_rad = _last_desired_yaw_rad;
+        }
+        
+        // Check if we are within tolerance (only when yaw data is available)
+        // FIX: Add hysteresis to prevent oscillation - only reset tolerance if error is significant
+        if (have_target_yaw && within_coarse) {
+            if (!_yaw_in_tolerance) {
+                _yaw_in_tolerance = true;
+                _yaw_hold_start_ms = now_ms;
+                _yaw_stable_start_ms = now_ms;  // Start hover timer
+            }
+            
+            // Check if hold time has been reached
+            if ((now_ms - _yaw_hold_start_ms) >= (uint32_t)hold_time_ms) {
+                // Check if yaw has been stable long enough (hover timer)
+                const float stable_time_ms = _yaw_stable_time_s.get() * 1000.0f;
+                if ((now_ms - _yaw_stable_start_ms) >= (uint32_t)stable_time_ms) {
+                    _yaw_align_state = YawAlignState::COARSE_HOLDING;
+                    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "PrecLand: Coarse alignment complete!");
+                }
+            }
+        } else {
+            // Outside tolerance or no yaw data available
+            // FIX: Add hysteresis - only reset if error is significantly outside tolerance
+            // This prevents oscillation when yaw is near the tolerance boundary
+            if (_yaw_in_tolerance && have_target_yaw) {
+                // Check if error is significantly outside tolerance (add 20% margin)
+                float error_cd = degrees(fabsf(yaw_error_rad)) * 100.0f;
+                float tolerance_with_hysteresis = coarse_tol_cd * 1.2f;
+                if (error_cd > tolerance_with_hysteresis) {
+                    _yaw_in_tolerance = false;
+                    _yaw_hold_start_ms = 0;
+                    _yaw_stable_start_ms = 0;
+                }
+                // If error is between tolerance and tolerance*1.2, keep _yaw_in_tolerance true
+                // This creates hysteresis and prevents oscillation
+            } else if (!have_target_yaw) {
+                // FIX: Don't reset tolerance if alignment was already successful
+                // If hold timer was running, keep _yaw_in_tolerance true even if target is lost
+                // This allows transition to DESCENDING when target is lost after successful alignment
+                if (_yaw_hold_start_ms == 0) {
+                    // No yaw data and alignment never started - reset tolerance
+                    _yaw_in_tolerance = false;
+                    _yaw_stable_start_ms = 0;
+                }
+                // If _yaw_hold_start_ms > 0, alignment was successful, keep _yaw_in_tolerance true
+            }
+        }
+        
+        result.yaw_aligned = have_target_yaw && within_coarse;
+        result.state = _yaw_align_state;
+        break;
+    }
+        
+    case YawAlignState::COARSE_HOLDING:
+        // Brief transition state
+        _coarse_align_complete = true;
+        _yaw_align_state = YawAlignState::DESCENDING;
+        _yaw_in_tolerance = false;
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "PrecLand: Descending with yaw control active");
+        FALLTHROUGH;
+        
+    case YawAlignState::DESCENDING: {
+        // =================================================================
+        // During descent: continue yaw control but allow descent
+        // =================================================================
+        result.allow_descent = true;
+        
+        // Target loss handling during descent
+        bool curr_visible = target_visible();
+        bool curr_acquired = target_acquired();
+        static uint32_t descending_target_lost_ms = 0;
+        
+        if (!curr_acquired && !curr_visible) {
+            // Target completely lost - hold position, keep last yaw
+            if (descending_target_lost_ms == 0) {
+                descending_target_lost_ms = now_ms;
+            }
+            result.desired_yaw_rad = _last_desired_yaw_rad;
+        } else {
+            descending_target_lost_ms = 0;
+        }
+        
+        if (have_target_yaw) {
+            result.desired_yaw_rad = desired_yaw;
+            _last_desired_yaw_rad = desired_yaw;
+        }
+        
+        result.yaw_aligned = within_coarse;
+        
+        // Check if fine alignment altitude has been reached
+        if (fine_alt_m > 0.01f && rangefinder_alt_m > 0.0f && rangefinder_alt_m <= fine_alt_m) {
+            _yaw_align_state = YawAlignState::FINE_ALIGNING;
+            _yaw_in_tolerance = false;
+            _yaw_hold_start_ms = 0;
+            GCS_SEND_TEXT(MAV_SEVERITY_INFO, "PrecLand: Fine align at %.1fm (descent paused)", (double)rangefinder_alt_m);
+        }
+        
+        result.state = _yaw_align_state;
+        break;
+    }
+        
+    case YawAlignState::FINE_ALIGNING: {
+        // =================================================================
+        // Fine aligning: descent paused
+        // =================================================================
+        result.allow_descent = false;
+        
+        // SAFETY: Timeout for fine alignment (prevents indefinite hover if sensor fails)
+        static uint32_t fine_align_start_ms = 0;
+        if (fine_align_start_ms == 0) {
+            fine_align_start_ms = now_ms;
+        }
+        const uint32_t FINE_ALIGN_TIMEOUT_MS = 10000;  // 10 second max
+        if ((now_ms - fine_align_start_ms) > FINE_ALIGN_TIMEOUT_MS) {
+            _yaw_align_state = YawAlignState::FINAL_DESCENT;
+            result.allow_descent = true;
+            fine_align_start_ms = 0;  // Reset for next time
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "PrecLand: Fine align timeout, final descent");
+            result.state = YawAlignState::FINAL_DESCENT;
+            break;
+        }
+        
+        // =================================================================
+        // ROBUSTNESS: Target loss handling during fine alignment
+        // Wait briefly for target to reappear before giving up
+        // =================================================================
+        static uint32_t fine_target_lost_ms = 0;
+        const uint32_t FINE_TARGET_WAIT_MS = 2000;  // Wait 2 seconds for re-acquisition
+        
+        if (!target_acquired()) {
+            if (fine_target_lost_ms == 0) {
+                fine_target_lost_ms = now_ms;
+                GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "PrecLand: Target lost at fine align, waiting %.1fs", 
+                              (double)(FINE_TARGET_WAIT_MS / 1000.0f));
+            }
+            
+            // Keep hovering and holding position during wait period
+            result.allow_descent = false;
+            result.desired_yaw_rad = _last_desired_yaw_rad;  // Hold last yaw
+            
+            // Check if wait time exceeded
+            if ((now_ms - fine_target_lost_ms) > FINE_TARGET_WAIT_MS) {
+                _yaw_align_state = YawAlignState::FINAL_DESCENT;
+                result.allow_descent = true;
+                fine_align_start_ms = 0;  // Reset for next time
+                fine_target_lost_ms = 0;  // Reset for next time
+                GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "PrecLand: Target not re-acquired, final descent");
+                result.state = YawAlignState::FINAL_DESCENT;
+            }
+            break;
+        } else {
+            // Target visible again - reset lost timer
+            if (fine_target_lost_ms != 0) {
+                GCS_SEND_TEXT(MAV_SEVERITY_INFO, "PrecLand: Target re-acquired at fine align");
+                fine_target_lost_ms = 0;
+            }
+        }
+        
+        // Update desired yaw: use measured value if available, otherwise use current vehicle yaw
+        if (have_target_yaw) {
+            result.desired_yaw_rad = desired_yaw;
+            _last_desired_yaw_rad = desired_yaw;
+        } else {
+            result.desired_yaw_rad = AP::ahrs().get_yaw_rad();
+            _last_desired_yaw_rad = result.desired_yaw_rad;
+        }
+        
+        // Check if we are within tolerance (only when yaw data is available)
+        if (have_target_yaw && within_fine) {
+            if (!_yaw_in_tolerance) {
+                _yaw_in_tolerance = true;
+                _yaw_hold_start_ms = now_ms;
+                _yaw_stable_start_ms = now_ms;  // Start hover timer
+            }
+            
+            // Check if hold time has been reached
+            if ((now_ms - _yaw_hold_start_ms) >= (uint32_t)hold_time_ms) {
+                // Check if yaw has been stable long enough (hover timer)
+                const float stable_time_ms = _yaw_stable_time_s.get() * 1000.0f;
+                if ((now_ms - _yaw_stable_start_ms) >= (uint32_t)stable_time_ms) {
+                    _yaw_align_state = YawAlignState::FINE_HOLDING;
+                    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "PrecLand: Fine alignment complete!");
+                }
+            }
+        } else {
+            _yaw_in_tolerance = false;
+            _yaw_hold_start_ms = 0;
+            _yaw_stable_start_ms = 0;
+        }
+        
+        result.yaw_aligned = have_target_yaw && within_fine;
+        result.state = _yaw_align_state;
+        break;
+    }
+        
+    case YawAlignState::FINE_HOLDING:
+        // Brief transition state
+        _yaw_align_state = YawAlignState::FINAL_DESCENT;
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "PrecLand: Final descent with yaw locked");
+        FALLTHROUGH;
+        
+    case YawAlignState::FINAL_DESCENT:
+        // =================================================================
+        // Final descent: descent allowed, yaw control continues
+        // =================================================================
+        result.allow_descent = true;
+        
+        if (have_target_yaw) {
+            result.desired_yaw_rad = desired_yaw;
+            _last_desired_yaw_rad = desired_yaw;
+        }
+        
+        result.yaw_aligned = within_fine;
+        result.state = _yaw_align_state;
+        break;
+    }
+    
+    return result;
+}
+
 #endif
 
 // ============================================================================
@@ -900,7 +1580,30 @@ void AC_PrecLand::Write_Precland()
 
 void AC_PrecLand::set_target_yaw_rad(float yaw_rad, uint32_t timestamp_ms)
 {
-    _target_yaw_rad = wrap_PI(yaw_rad);
+    // SAFETY: Reject invalid input
+    if (!isfinite(yaw_rad)) {
+        return;  // Don't update with NaN or Inf
+    }
+    
+    float new_yaw = wrap_PI(yaw_rad);
+    
+    // Apply low-pass filter if configured (PLND_YAW_FILT > 0)
+    // Filter uses angular difference to handle wrap-around correctly
+    // alpha = 0: no filtering (immediate response)
+    // alpha = 0.9: heavy filtering (slow response, very stable)
+    const float alpha = constrain_float(_yaw_filter_alpha.get(), 0.0f, 0.9f);
+    
+    if (_target_yaw_valid && !is_zero(alpha)) {
+        // Calculate angular difference (handles wrap-around correctly)
+        float yaw_diff = wrap_PI(new_yaw - _target_yaw_rad);
+        // Apply filter: filtered = old + (1-alpha) * diff
+        // Note: (1-alpha) because alpha=0 means no filtering (full response)
+        _target_yaw_rad = wrap_PI(_target_yaw_rad + (1.0f - alpha) * yaw_diff);
+    } else {
+        // First measurement or no filtering - use raw value
+        _target_yaw_rad = new_yaw;
+    }
+    
     _target_yaw_valid = true;
     _target_yaw_timestamp_ms = timestamp_ms;
 }
@@ -910,7 +1613,8 @@ bool AC_PrecLand::get_target_yaw_rad(float &yaw_rad) const
     if (!_target_yaw_valid) {
         return false;
     }
-    if ((AP_HAL::millis() - _target_yaw_timestamp_ms) > LANDING_TARGET_TIMEOUT_MS) {
+    uint32_t age_ms = AP_HAL::millis() - _target_yaw_timestamp_ms;
+    if (age_ms > LANDING_TARGET_TIMEOUT_MS) {
         return false;
     }
     yaw_rad = _target_yaw_rad;

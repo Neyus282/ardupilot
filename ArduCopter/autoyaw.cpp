@@ -103,17 +103,25 @@ void Mode::AutoYaw::set_mode(Mode yaw_mode)
         break;
 
     case Mode::CIRCLE:
-     case Mode::PILOT_RATE:
-     case Mode::WEATHERVANE:
-         // no initialisation required
-         break;
+    case Mode::PILOT_RATE:
+    case Mode::WEATHERVANE:
+        // no initialisation required
+        break;
 
-     case Mode::PRECLAND_TARGET:
-         // precision landing target yaw - no special initialization needed
-         // yaw angle will be set externally via set_precland_target_yaw_rad()
-         break;
-     }
- }
+    case Mode::PRECLAND_TARGET:
+        // =======================================================================
+        // Initialisiere _yaw_angle_rad auf aktuelles Vehicle Yaw
+        // UND setze _precland_target_yaw_rad ebenfalls auf aktuelles Yaw
+        // Das verhindert sofortiges Drehen beim Mode-Wechsel
+        // =======================================================================
+        _yaw_angle_rad = copter.ahrs.get_yaw_rad();
+        _precland_target_yaw_rad = _yaw_angle_rad;
+        _precland_target_yaw_valid = false;  
+        _last_update_ms = millis();
+        _yaw_rate_rads = 0.0f;
+        break;
+    }
+}
 
 // set_fixed_yaw_rad - sets the yaw look at heading for auto mode
 void Mode::AutoYaw::set_fixed_yaw_rad(float yaw_rad, float yaw_rate_rads, int8_t direction, bool relative_angle)
@@ -234,7 +242,6 @@ bool Mode::AutoYaw::reached_fixed_yaw_target()
     return (fabsf(wrap_PI(_yaw_angle_rad - copter.ahrs.get_yaw_rad())) <= radians(2));
 }
 
-// yaw_rad - returns target heading depending upon auto_yaw.mode()
 float Mode::AutoYaw::yaw_rad()
 {
     switch (_mode) {
@@ -289,11 +296,58 @@ float Mode::AutoYaw::yaw_rad()
         break;
 
     case Mode::PRECLAND_TARGET:
-        // return precision landing target yaw if valid
         if (_precland_target_yaw_valid) {
-            _yaw_angle_rad = _precland_target_yaw_rad;
+            const uint32_t now_ms = millis();
+            float dt = (now_ms - _last_update_ms) * 0.001f;
+            _last_update_ms = now_ms;
+            
+            // Sanitize dt (mindestens 1ms, maximal 100ms)
+            dt = constrain_float(dt, 0.001f, 0.1f);
+            
+            // Hole max Yaw Rate aus Parameter
+            float max_yaw_rate_rads;
+#if AC_PRECLAND_ENABLED
+            max_yaw_rate_rads = radians(copter.precland.get_yaw_rate_max_dps());
+#else
+            max_yaw_rate_rads = radians(30.0f);  // Default: 30°/s
+#endif
+            
+            // =================================================================
+            // KORRIGIERTES RATE-LIMITING:
+            // 
+            // Problem vorher: 
+            //   yaw_error = target - current_vehicle_yaw
+            //   _yaw_angle_rad = current_vehicle_yaw + limited_step
+            //   → Das Target "springt mit" dem Vehicle!
+            //
+            // Lösung jetzt:
+            //   target_error = new_target - current_target (_yaw_angle_rad)
+            //   _yaw_angle_rad = current_target + limited_step
+            //   → Das Target bewegt sich LANGSAM zum Ziel
+            // =================================================================
+            
+            // Berechne Fehler zwischen AKTUELLEM internem Target und NEUEM externem Target
+            float target_error = wrap_PI(_precland_target_yaw_rad - _yaw_angle_rad);
+            
+            // Rate-Limit: Maximaler Schritt pro Zeiteinheit
+            float max_yaw_step = max_yaw_rate_rads * dt;
+            
+            // Limitiere den Schritt
+            float yaw_step = constrain_float(target_error, -max_yaw_step, max_yaw_step);
+            
+            // Aktualisiere das interne Target (rate-limited)
+            _yaw_angle_rad = wrap_PI(_yaw_angle_rad + yaw_step);
+            
+            // Berechne die tatsächliche Yaw Rate für den Controller
+            // (wird in rate_rads() zurückgegeben)
+            _yaw_rate_rads = yaw_step / dt;
+            
+        } else {
+            // Kein gültiges externes Target - halte aktuellen Heading
+            // Setze internes Target auf aktuelles Vehicle Heading
+            _yaw_angle_rad = copter.ahrs.get_yaw_rad();
+            _yaw_rate_rads = 0.0f;
         }
-        // if not valid, keep previous _yaw_angle_rad (holds last known value)
         break;
 
     case Mode::LOOK_AT_NEXT_WP:
@@ -301,8 +355,9 @@ float Mode::AutoYaw::yaw_rad()
         // point towards next waypoint.
         // we don't use wp_bearing_deg because we don't want the copter to turn too much during flight
         _yaw_angle_rad = copter.pos_control->get_yaw_rad();
-    break;
+        break;
     }
+    
     return _yaw_angle_rad;
 }
 
@@ -318,8 +373,11 @@ float Mode::AutoYaw::rate_rads()
     case Mode::LOOK_AHEAD:
     case Mode::RESET_TO_ARMED_YAW:
     case Mode::CIRCLE:
+        break;
+
     case Mode::PRECLAND_TARGET:
-        _yaw_rate_rads = 0.0f;
+        // Rate is already calculated in yaw_rad(), just return it
+        // DO NOT recalculate - that causes double control loop issues
         break;
 
     case Mode::LOOK_AT_NEXT_WP:

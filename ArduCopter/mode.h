@@ -236,13 +236,23 @@ protected:
     void land_run_normal_or_precland(bool pause_descent = false);
 
 #if AC_PRECLAND_ENABLED
-    // Go towards a position commanded by prec land state machine in order to retry landing
-    // The passed in location is expected to be NED and in meters
     void precland_retry_position(const Vector3p &retry_pos);
-
-    // Run precland statemachine. This function should be called from any mode that wants to do precision landing.
-    // This handles everything from prec landing, to prec landing failures, to retries and failsafe measures
     void precland_run();
+    
+    // Yaw alignment cache helpers
+    void update_yaw_align_cache();
+    void invalidate_yaw_align_cache();  
+    bool get_cached_yaw_allow_descent();
+    float get_cached_desired_yaw_rad();
+    uint8_t get_cached_yaw_state();
+    
+    // Cached values
+    static bool _cached_yaw_allow_descent;
+    static bool _cached_yaw_aligned;
+    static float _cached_desired_yaw_rad;
+    static float _cached_yaw_error_deg;
+    static uint8_t _cached_yaw_state;
+    static uint32_t _yaw_cache_update_ms;
 #endif
 
     // return expected input throttle setting to hover:
@@ -347,8 +357,18 @@ public:
 
         bool reached_fixed_yaw_target();
 
-        // Set precision landing target yaw (called from precland system)
+ // Set precision landing target yaw (called from precland system)
         void set_precland_target_yaw_rad(float yaw_rad) {
+            // Wenn dies das erste gültige Target ist, initialisiere smooth
+            if (!_precland_target_yaw_valid) {
+                // Starte von aktuellem _yaw_angle_rad (das ist entweder Vehicle Yaw
+                // oder das vorherige Target falls wir schon im PRECLAND_TARGET Mode sind)
+                // Das verhindert Sprünge
+                
+                // _yaw_angle_rad bleibt unverändert, wir setzen nur das neue Ziel
+                // Der yaw_rad() Code wird dann smooth zum neuen Ziel überblenden
+            }
+            
             _precland_target_yaw_rad = yaw_rad;
             _precland_target_yaw_valid = true;
         }
@@ -411,7 +431,7 @@ public:
     // these are candidates for moving into the Mode base
     // class.
 
-    // Returns the pilot’s commanded climb rate in m/s.
+    // Returns the pilotâ€™s commanded climb rate in m/s.
     float get_pilot_desired_climb_rate_ms() const;
 
     // Returns the throttle level to maintain altitude (excluding takeoff boost).
@@ -423,19 +443,19 @@ public:
     // Requests a mode change with the specified reason; returns true if accepted.
     bool set_mode(Mode::Number mode, ModeReason reason);
 
-    // Sets the “land complete” state flag.
+    // Sets the â€œland completeâ€ state flag.
     void set_land_complete(bool b);
 
     // Returns a reference to the GCS interface for Copter.
     GCS_Copter &gcs() const;
 
-    // Returns the pilot’s maximum upward speed in m/s.
+    // Returns the pilotâ€™s maximum upward speed in m/s.
     float get_pilot_speed_up_ms() const;
 
-    // Returns the pilot’s maximum downward speed in m/s.
+    // Returns the pilotâ€™s maximum downward speed in m/s.
     float get_pilot_speed_dn_ms() const;
 
-    // Returns the pilot’s vertical acceleration limit in m/s².
+    // Returns the pilotâ€™s vertical acceleration limit in m/sÂ².
     float get_pilot_accel_D_mss() const;
     // end pass-through functions
 };
