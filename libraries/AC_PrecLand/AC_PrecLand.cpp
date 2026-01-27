@@ -14,6 +14,7 @@
 #include <AP_Logger/AP_Logger.h>
 #include <GCS_MAVLink/GCS.h>
 #include <AP_Vehicle/AP_Vehicle_Type.h>
+#include <AP_Notify/AP_Notify.h>
 
 extern const AP_HAL::HAL& hal;
 
@@ -804,6 +805,8 @@ void AC_PrecLand::check_ekf_init_timeout()
             // the target has been visible for a while, EKF should now have initialized to a good value
             _target_acquired = true;
             GCS_SEND_TEXT(MAV_SEVERITY_INFO, "PrecLand: Init Complete");
+            // play success tone on buzzer
+            AP_Notify::play_tune("MFT200L8>CE");
         }
     }
 }

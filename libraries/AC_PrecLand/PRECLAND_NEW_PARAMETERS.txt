@@ -1,0 +1,336 @@
+================================================================================
+                    PRECISION LANDING - NEW PARAMETERS
+                         Yaw Alignment Feature
+================================================================================
+
+This document describes all new parameters added for the enhanced Precision
+Landing system with yaw alignment capability.
+
+All parameters use the prefix "PLND_" in ArduPilot.
+
+================================================================================
+PARAMETER OVERVIEW
+================================================================================
+
+Parameter Name    | Default | Range        | Units  | Description
+------------------|---------|--------------|--------|---------------------------
+PLND_YAW_TGT      | 0       | -18000-18000 | cdeg   | Target yaw angle
+PLND_YAW_COARSE   | 2000    | 500-9000     | cdeg   | Coarse alignment tolerance
+PLND_YAW_FINE     | 500     | 100-2000     | cdeg   | Fine alignment tolerance
+PLND_YAW_TIME     | 5.0     | 1-10         | s      | Hold time before proceed
+PLND_YAW_FALT     | 2.0     | 0-10         | m      | Fine alignment altitude
+PLND_YAW_RATE     | 20      | 10-90        | deg/s  | Max yaw rotation rate
+PLND_YAW_STABLE   | 2.0     | 0-10         | s      | Stable time after align
+PLND_ACC_ERR      | 0.15    | 0.05-1.0     | m      | Acceptable XY error
+PLND_MIN_DSPD     | 0.1     | 0.05-0.5     | m/s    | Min descent speed
+PLND_YAW_XY_GATE  | 1       | 0-1          | -      | XY gate enable
+PLND_YAW_MAXALT   | 5.0     | 0-20         | m      | Max alt for yaw align
+PLND_YAW_FILT     | 0.5     | 0-0.9        | -      | Yaw filter coefficient
+PLND_FINE_CORR    | 0.15    | 0-0.5        | m      | Max fine correction
+
+
+================================================================================
+DETAILED PARAMETER DESCRIPTIONS
+================================================================================
+
+--------------------------------------------------------------------------------
+PLND_YAW_TGT - Yaw Alignment Target Angle
+--------------------------------------------------------------------------------
+Default:  0
+Range:    -18000 to 18000 (or -1 to disable)
+Units:    centidegrees (cdeg), where 100 cdeg = 1 degree
+
+Description:
+  Desired yaw offset from the landing target's orientation. When the drone
+  detects an AprilTag or other marker, it will rotate to align its heading
+  with the target's X-axis plus this offset.
+  
+  - 0:     Drone nose points in same direction as tag's X-axis
+  - 9000:  Drone rotated 90° clockwise relative to tag
+  - -9000: Drone rotated 90° counter-clockwise relative to tag
+  - -1:    DISABLE yaw alignment feature entirely
+
+Use Case:
+  Align drone for proper camera/sensor orientation during landing, or to
+  position cargo doors facing a specific direction.
+
+--------------------------------------------------------------------------------
+PLND_YAW_COARSE - Coarse Yaw Alignment Tolerance
+--------------------------------------------------------------------------------
+Default:  2000 (20 degrees)
+Range:    500 to 9000
+Units:    centidegrees
+
+Description:
+  Maximum allowed yaw error during the coarse alignment phase. The drone will
+  hover and rotate until the yaw error is smaller than this value before
+  starting its descent.
+  
+  - Lower values: More precise initial alignment, but longer hover time
+  - Higher values: Faster transition to descent, alignment refined during descent
+
+Recommended: 1500-3000 cdeg (15-30 degrees)
+
+--------------------------------------------------------------------------------
+PLND_YAW_FINE - Fine Yaw Alignment Tolerance
+--------------------------------------------------------------------------------
+Default:  500 (5 degrees)
+Range:    100 to 2000
+Units:    centidegrees
+
+Description:
+  Yaw error tolerance for the fine alignment phase that occurs at low altitude
+  (defined by PLND_YAW_FALT). The drone will hold position and fine-tune its
+  yaw until within this tolerance before final descent.
+
+Recommended: 300-700 cdeg (3-7 degrees)
+
+--------------------------------------------------------------------------------
+PLND_YAW_TIME - Yaw Alignment Hold Time
+--------------------------------------------------------------------------------
+Default:  5.0
+Range:    1 to 10
+Units:    seconds
+
+Description:
+  Time that the yaw must remain within tolerance before the state machine
+  proceeds to the next phase. This ensures stable alignment and prevents
+  premature transitions due to momentary alignment.
+
+  Applied during both coarse and fine alignment phases.
+
+--------------------------------------------------------------------------------
+PLND_YAW_FALT - Fine Yaw Alignment Altitude
+--------------------------------------------------------------------------------
+Default:  2.0
+Range:    0 to 10
+Units:    meters (requires rangefinder)
+
+Description:
+  Altitude above ground at which fine yaw alignment begins. When the drone
+  descends below this altitude, it will pause descent and perform final
+  yaw corrections before the last descent phase.
+
+  Set to 0 to disable fine alignment (proceed directly to final descent).
+
+--------------------------------------------------------------------------------
+PLND_YAW_RATE - Maximum Yaw Rate for Alignment
+--------------------------------------------------------------------------------
+Default:  20
+Range:    10 to 90
+Units:    degrees per second
+
+Description:
+  Maximum rotation rate during yaw alignment. Lower values reduce the risk
+  of losing the target during rotation but increase alignment time.
+
+  - 10-20 deg/s: Conservative, good for small tags or high altitude
+  - 30-45 deg/s: Moderate, good balance of speed and reliability
+  - 60-90 deg/s: Aggressive, only for large tags with reliable detection
+
+Recommended: 15-30 deg/s for most applications
+
+--------------------------------------------------------------------------------
+PLND_YAW_STABLE - Yaw Stable Time
+--------------------------------------------------------------------------------
+Default:  2.0
+Range:    0 to 10
+Units:    seconds
+
+Description:
+  Time the yaw must remain stable within tolerance after alignment completes
+  before descent continues. Allows rotational oscillations to settle.
+
+--------------------------------------------------------------------------------
+PLND_ACC_ERR - Acceptable XY Error
+--------------------------------------------------------------------------------
+Default:  0.15
+Range:    0.05 to 1.0
+Units:    meters
+
+Description:
+  Acceptable horizontal position error for optimal descent. When XY error is
+  within this value, the drone uses minimum descent speed for maximum
+  precision during final approach.
+
+--------------------------------------------------------------------------------
+PLND_MIN_DSPD - Minimum Descent Speed
+--------------------------------------------------------------------------------
+Default:  0.1
+Range:    0.05 to 0.5
+Units:    meters per second
+
+Description:
+  Minimum descent speed during precision landing when the drone is close
+  to the target and well-aligned. Slower speeds improve landing accuracy
+  but increase total landing time.
+
+--------------------------------------------------------------------------------
+PLND_YAW_XY_GATE - Yaw Alignment XY Gate
+--------------------------------------------------------------------------------
+Default:  1 (Enabled)
+Range:    0 (Disabled) or 1 (Enabled)
+Units:    -
+
+Description:
+  When enabled, yaw alignment only begins after the drone has centered
+  itself over the target (XY position within acceptable error). This
+  prevents rotation while significantly off-center, which could cause
+  target loss.
+
+  - 0: Yaw alignment starts immediately when target detected
+  - 1: Yaw alignment waits until XY position is centered
+
+Recommended: Keep enabled (1) for reliability
+
+--------------------------------------------------------------------------------
+PLND_YAW_MAXALT - Yaw Alignment Maximum Altitude
+--------------------------------------------------------------------------------
+Default:  5.0
+Range:    0 to 20
+Units:    meters (requires rangefinder)
+
+Description:
+  Maximum altitude at which yaw alignment can begin. If the drone is higher
+  than this altitude when the target is detected, it will descend first
+  before starting rotation.
+
+  Purpose: At high altitudes, the target appears smaller and rotation is
+  more likely to cause target loss. This parameter ensures yaw alignment
+  only occurs when the target is large enough for reliable tracking.
+
+  Set to 0 to disable altitude limit (start alignment at any height).
+
+--------------------------------------------------------------------------------
+PLND_YAW_FILT - Yaw Filter Alpha
+--------------------------------------------------------------------------------
+Default:  0.5
+Range:    0 to 0.9
+Units:    - (dimensionless coefficient)
+
+Description:
+  Low-pass filter coefficient for smoothing target yaw measurements. Reduces
+  oscillation caused by noisy yaw readings from the landing target sensor.
+
+  Formula: filtered_yaw = alpha * old_yaw + (1-alpha) * new_yaw
+
+  - 0.0: No filtering (immediate response, may oscillate)
+  - 0.3: Light filtering
+  - 0.5: Moderate filtering (recommended)
+  - 0.7: Heavy filtering (slow response)
+  - 0.9: Very heavy filtering (very slow response)
+
+--------------------------------------------------------------------------------
+PLND_FINE_CORR - Fine Alignment Maximum Correction
+--------------------------------------------------------------------------------
+Default:  0.15
+Range:    0 to 0.5
+Units:    meters
+
+Description:
+  Maximum horizontal position correction per update during fine alignment
+  and final descent phases. Limits how aggressively the drone corrects its
+  position to prevent oscillation while still allowing wind compensation.
+
+  - 0.0:  Disable correction limiting (use full target position)
+  - 0.05: Very gentle corrections
+  - 0.15: Moderate corrections (recommended)
+  - 0.30: Larger corrections (more aggressive)
+
+  Set lower for windy conditions or if observing position oscillation.
+
+
+================================================================================
+STATE MACHINE OVERVIEW
+================================================================================
+
+The yaw alignment feature uses the following states:
+
+1. SEARCHING
+   - Waiting for target detection
+   - No yaw control active
+
+2. COARSE_ALIGNING
+   - Target detected, rotating to align yaw
+   - Descent paused
+   - Uses PLND_YAW_COARSE tolerance
+
+3. COARSE_HOLDING
+   - Yaw within tolerance, holding for PLND_YAW_TIME
+   - Verifying stable alignment
+
+4. DESCENDING
+   - Aligned, descending toward target
+   - Continuous yaw correction during descent
+
+5. FINE_ALIGNING
+   - Below PLND_YAW_FALT altitude
+   - Final yaw adjustment using PLND_YAW_FINE tolerance
+
+6. FINE_HOLDING
+   - Fine yaw within tolerance, holding for confirmation
+
+7. FINAL_DESCENT
+   - All alignment complete
+   - Descending to landing with yaw locked
+
+
+================================================================================
+RECOMMENDED SETTINGS
+================================================================================
+
+Conservative (Reliable, slow):
+  PLND_YAW_TGT      = 0
+  PLND_YAW_COARSE   = 3000
+  PLND_YAW_FINE     = 500
+  PLND_YAW_TIME     = 3.0
+  PLND_YAW_RATE     = 15
+  PLND_YAW_MAXALT   = 4.0
+  PLND_YAW_FILT     = 0.6
+
+Balanced (Default):
+  PLND_YAW_TGT      = 0
+  PLND_YAW_COARSE   = 2000
+  PLND_YAW_FINE     = 500
+  PLND_YAW_TIME     = 5.0
+  PLND_YAW_RATE     = 20
+  PLND_YAW_MAXALT   = 5.0
+  PLND_YAW_FILT     = 0.5
+
+Aggressive (Fast, requires good detection):
+  PLND_YAW_TGT      = 0
+  PLND_YAW_COARSE   = 1500
+  PLND_YAW_FINE     = 300
+  PLND_YAW_TIME     = 2.0
+  PLND_YAW_RATE     = 30
+  PLND_YAW_MAXALT   = 8.0
+  PLND_YAW_FILT     = 0.3
+
+Disable Yaw Alignment:
+  PLND_YAW_TGT      = -1
+
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Problem: Drone oscillates in yaw during alignment
+Solution: Increase PLND_YAW_FILT (e.g., 0.6-0.7) and/or decrease PLND_YAW_RATE
+
+Problem: Target lost during rotation
+Solution: Decrease PLND_YAW_RATE, decrease PLND_YAW_MAXALT, ensure tag is large
+
+Problem: Alignment takes too long
+Solution: Increase PLND_YAW_COARSE, decrease PLND_YAW_TIME
+
+Problem: Drone drifts during fine alignment
+Solution: Decrease PLND_FINE_CORR, check wind conditions
+
+Problem: Yaw alignment never starts
+Solution: Check PLND_YAW_XY_GATE (disable if needed), check PLND_YAW_MAXALT
+
+
+================================================================================
+Document Version: 1.0
+Last Updated: January 2026
+================================================================================
