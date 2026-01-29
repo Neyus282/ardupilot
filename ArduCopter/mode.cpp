@@ -1000,6 +1000,37 @@ void Mode::land_run_horizontal_control()
                     // No target - hold current position
                     target_pos_ne_m = pos_control->get_pos_estimate_NED_m().xy();
                 }
+            } else if (yaw_state == AC_PrecLand::YawAlignState::DESCENDING) {
+                // DESCENDING: Target was valid before but now lost temporarily
+                // Use last known target position to continue navigating toward landing point
+                // This prevents wind drift during brief target loss
+                fine_align_ref_valid = false;
+                
+                // Static variables for DESCENDING target memory
+                static Vector2p last_descending_target_pos;
+                static bool last_descending_target_valid = false;
+                static uint8_t last_state_for_descending = 0;
+                
+                // Reset target memory when entering DESCENDING from a different state
+                uint8_t current_state = static_cast<uint8_t>(yaw_state);
+                if (last_state_for_descending != current_state) {
+                    last_descending_target_valid = false;
+                    last_state_for_descending = current_state;
+                }
+                
+                Vector2p target_pos_temp;
+                if (copter.precland.get_target_position_m(target_pos_temp)) {
+                    // Target visible - update and use current position
+                    target_pos_ne_m = target_pos_temp;
+                    last_descending_target_pos = target_pos_temp;
+                    last_descending_target_valid = true;
+                } else if (last_descending_target_valid) {
+                    // Target lost but we have last known position - use it
+                    target_pos_ne_m = last_descending_target_pos;
+                } else {
+                    // No target and no history - hold current position
+                    target_pos_ne_m = pos_control->get_pos_estimate_NED_m().xy();
+                }
             } else {
                 // For other states (SEARCHING, COARSE_ALIGNING, COARSE_HOLDING): hold position
                 // Don't use target position during rotation - camera may point away from target

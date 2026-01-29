@@ -70,6 +70,9 @@ v_fov = 2 * math.atan((sensor_h_mm / 2) / lens_mm)
 # =============================================================================
 
 def z_to_mm(z_translation, tag_size):
+    # SAFETY: Validate inputs to prevent division by zero or invalid results
+    if tag_size <= 0 or z_translation <= 0:
+        return 0
     return (((z_translation * 100) * tag_size) / 165) - lens_to_camera_mm
 
 
@@ -125,7 +128,9 @@ def send_landing_target_mavlink2(tag, tag_size, ofs_x, ofs_y):
     lp_cy = tag.cy + px_ofs_y
 
     angle_x = ((lp_cx / x_res) - 0.5) * h_fov
-    angle_y = ((lp_cy / y_res) - 0.5) * v_fov
+    # CRITICAL: Negate angle_y for ArduPilot coordinate system
+    # ArduPilot expects positive angle_y = target is to the LEFT
+    angle_y = -((lp_cy / y_res) - 0.5) * v_fov
     distance = math.sqrt(body_x**2 + body_y**2 + body_z**2)
 
     size_x = (tag.w / x_res) * h_fov
@@ -247,26 +252,32 @@ while True:
     clock.tick()
     img = sensor.snapshot()
 
-    tags = img.find_apriltags(fx=f_x, fy=f_y, cx=c_x, cy=c_y)
+    # decimate=2: Faster detection with slight accuracy reduction
+    # Good trade-off for real-time performance
+    tags = img.find_apriltags(fx=f_x, fy=f_y, cx=c_x, cy=c_y, decimate=2)
 
     # Select best marker with hysteresis
     tag, size, ofs_x, ofs_y = select_marker(tags)
 
     if tag is not None:
-        mav = send_landing_target_mavlink2(tag, size, ofs_x, ofs_y)
+        # Only send if z_mm is valid (> 50mm)
+        z_mm = z_to_mm(tag.z_translation, size)
+        if z_mm > 50:
+            mav = send_landing_target_mavlink2(tag, size, ofs_x, ofs_y)
+            msg_count += 1
+            
+            # Print status every 30 messages (reduces serial load)
+            if msg_count % 30 == 0:
+                print(
+                    "[%04d] ID:%d | z:%.2fm | yaw:%+.1f° | %.1ffps"
+                    % (msg_count, tag.id, z_mm/1000.0, mav["yaw"], clock.fps())
+                )
 
+        # Visual feedback
         img.draw_rectangle(tag.rect)
         img.draw_cross(tag.cx, tag.cy)
-
         led_green.on()
         led_red.off()
-
-        msg_count += 1
-        if msg_count % 10 == 0:  # Print every 10th message
-            print(
-                "[%04d] ID:%d | x:%+.2f y:%+.2f z:%+.2f | yaw:%+.1f° | %.1ffps"
-                % (msg_count, tag.id, mav["x"], mav["y"], mav["z"], mav["yaw"], clock.fps())
-            )
     else:
         led_green.off()
         led_red.on()
