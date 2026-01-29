@@ -123,6 +123,7 @@ public:
     enum class YawAlignState : uint8_t {
         DISABLED = 0,           // Yaw alignment disabled
         SEARCHING,              // Descending to find target
+        XY_CENTERING,           // Centering over target before yaw alignment
         COARSE_ALIGNING,        // Aligning yaw (no descent)
         COARSE_HOLDING,         // Holding coarse alignment
         DESCENDING,             // Normal descent with yaw correction
@@ -357,7 +358,12 @@ private:
     uint32_t                    _yaw_align_start_ms;        // Time when current state started
     uint32_t                    _yaw_hold_start_ms;         // Time when yaw entered tolerance
     uint32_t                    _yaw_stable_start_ms;       // Time when yaw became stable (for hover timer)
+    uint32_t                    _xy_center_start_ms;        // Time when XY centering started
+    uint32_t                    _xy_stable_start_ms;        // Time when XY became stable
+    uint32_t                    _fine_align_start_ms;       // Time when fine alignment started
+    uint32_t                    _descending_target_lost_ms; // Time when target lost during descent
     bool                        _yaw_in_tolerance;          // True if currently within tolerance
+    bool                        _xy_centered;               // True if XY position is centered (with hysteresis)
     bool                        _coarse_align_complete;     // True after coarse alignment done
     float                       _last_desired_yaw_rad;      // Last commanded yaw for smooth transitions
     uint32_t                    _target_lost_timestamp_ms;  // Time since target was lost

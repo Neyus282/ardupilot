@@ -248,65 +248,146 @@ The yaw alignment feature uses the following states:
 
 1. SEARCHING
    - Waiting for target detection
+   - Descent allowed
    - No yaw control active
 
-2. COARSE_ALIGNING
-   - Target detected, rotating to align yaw
-   - Descent paused
+2. XY_CENTERING (NEW!)
+   - Target detected, centering drone over target
+   - Active XY position control toward target
+   - Descent allowed (slow descent while centering)
+   - NO yaw rotation yet - this prevents losing target during rotation
+   - Transitions to COARSE_ALIGNING when XY error < PLND_ACC_ERR
+
+3. COARSE_ALIGNING
+   - XY centered, now rotating to align yaw
+   - Descent PAUSED (to prevent losing target during rotation)
+   - Position HOLD (no target correction during rotation)
    - Uses PLND_YAW_COARSE tolerance
 
-3. COARSE_HOLDING
+4. COARSE_HOLDING
    - Yaw within tolerance, holding for PLND_YAW_TIME
    - Verifying stable alignment
 
-4. DESCENDING
+5. DESCENDING
    - Aligned, descending toward target
+   - Active XY correction to target position
    - Continuous yaw correction during descent
 
-5. FINE_ALIGNING
+6. FINE_ALIGNING
    - Below PLND_YAW_FALT altitude
    - Final yaw adjustment using PLND_YAW_FINE tolerance
+   - Timeout: 20 seconds (prevents indefinite hover)
 
-6. FINE_HOLDING
+7. FINE_HOLDING
    - Fine yaw within tolerance, holding for confirmation
 
-7. FINAL_DESCENT
+8. FINAL_DESCENT
    - All alignment complete
    - Descending to landing with yaw locked
 
 
 ================================================================================
-RECOMMENDED SETTINGS
+RECOMMENDED SETTINGS - AVIATION STANDARD
 ================================================================================
 
-Conservative (Reliable, slow):
-  PLND_YAW_TGT      = 0
-  PLND_YAW_COARSE   = 3000
-  PLND_YAW_FINE     = 500
-  PLND_YAW_TIME     = 3.0
-  PLND_YAW_RATE     = 15
-  PLND_YAW_MAXALT   = 4.0
-  PLND_YAW_FILT     = 0.6
+The following settings are tuned according to aviation safety standards:
+- Stabilize before transitioning
+- Hysteresis on all state transitions
+- Conservative timeouts
+- Smooth movements to prevent target loss
 
-Balanced (Default):
-  PLND_YAW_TGT      = 0
-  PLND_YAW_COARSE   = 2000
-  PLND_YAW_FINE     = 500
-  PLND_YAW_TIME     = 5.0
-  PLND_YAW_RATE     = 20
-  PLND_YAW_MAXALT   = 5.0
-  PLND_YAW_FILT     = 0.5
+--------------------------------------------------------------------------------
+SMALL TAGS (27-70mm) - RECOMMENDED FOR YOUR SETUP
+--------------------------------------------------------------------------------
+Small tags require very careful handling:
+- Lower max altitude (tag must be large enough to track)
+- Slower yaw rate (prevent target loss during rotation)
+- Tighter tolerances (need precision with small reference)
+- More filtering (small tags = more measurement noise)
+- Longer hold times (ensure stable alignment)
 
-Aggressive (Fast, requires good detection):
+  PLND_ENABLED      = 1
+  PLND_TYPE         = 1         # MAVLink
+  
+  # Yaw Alignment - CONSERVATIVE for small tags
+  PLND_YAW_TGT      = 0         # Align to tag X-axis (or your desired angle)
+  PLND_YAW_COARSE   = 1500      # 15 degrees coarse tolerance
+  PLND_YAW_FINE     = 300       # 3 degrees fine tolerance
+  PLND_YAW_TIME     = 2.0       # 2 second hold time (faster response)
+  PLND_YAW_RATE     = 12        # SLOW! 12 deg/s max rotation
+  PLND_YAW_STABLE   = 1.5       # 1.5 second stable time
+  PLND_YAW_MAXALT   = 3.0       # Start yaw align at 3m max (tag visible)
+  PLND_YAW_FALT     = 1.0       # Fine align at 1m
+  PLND_YAW_FILT     = 0.6       # More filtering for small tags
+  PLND_YAW_XY_GATE  = 1         # XY gate enabled
+  
+  # Position Control
+  PLND_ACC_ERR      = 0.10      # 10cm XY tolerance (tighter for small tags)
+  PLND_MIN_DSPD     = 0.08      # 8cm/s minimum descent
+  PLND_FINE_CORR    = 0.10      # 10cm max correction in fine phase
+  PLND_XY_DIST_MAX  = 1.5       # 1.5m max XY error before stopping descent
+  
+  # Timeouts
+  PLND_TIMEOUT      = 4         # 4 second retry timeout
+  PLND_STRICT       = 1         # Normal strictness
+
+--------------------------------------------------------------------------------
+MEDIUM TAGS (70-150mm) - BALANCED
+--------------------------------------------------------------------------------
   PLND_YAW_TGT      = 0
-  PLND_YAW_COARSE   = 1500
-  PLND_YAW_FINE     = 300
+  PLND_YAW_COARSE   = 2000      # 20 degrees
+  PLND_YAW_FINE     = 500       # 5 degrees
   PLND_YAW_TIME     = 2.0
-  PLND_YAW_RATE     = 30
-  PLND_YAW_MAXALT   = 8.0
-  PLND_YAW_FILT     = 0.3
+  PLND_YAW_RATE     = 18        # 18 deg/s
+  PLND_YAW_STABLE   = 1.5
+  PLND_YAW_MAXALT   = 4.0
+  PLND_YAW_FALT     = 1.5
+  PLND_YAW_FILT     = 0.5
+  PLND_ACC_ERR      = 0.15
+  PLND_MIN_DSPD     = 0.10
+  PLND_FINE_CORR    = 0.15
 
-Disable Yaw Alignment:
+--------------------------------------------------------------------------------
+LARGE TAGS (150mm+) - FASTER
+--------------------------------------------------------------------------------
+  PLND_YAW_TGT      = 0
+  PLND_YAW_COARSE   = 2500      # 25 degrees
+  PLND_YAW_FINE     = 700       # 7 degrees
+  PLND_YAW_TIME     = 1.5
+  PLND_YAW_RATE     = 25        # 25 deg/s
+  PLND_YAW_STABLE   = 1.0
+  PLND_YAW_MAXALT   = 6.0
+  PLND_YAW_FALT     = 2.0
+  PLND_YAW_FILT     = 0.4
+  PLND_ACC_ERR      = 0.20
+  PLND_MIN_DSPD     = 0.15
+  PLND_FINE_CORR    = 0.20
+
+--------------------------------------------------------------------------------
+MULTI-MARKER LANDING (Your Setup with 27-183mm tags)
+--------------------------------------------------------------------------------
+For multi-marker systems where different size tags are used at different
+altitudes, use these settings:
+
+  # The system will use the largest visible tag automatically
+  # Settings should be tuned for the SMALLEST tag (27mm)
+  
+  PLND_YAW_TGT      = 0
+  PLND_YAW_COARSE   = 1500      # Tight tolerance
+  PLND_YAW_FINE     = 300       # Very tight for 27mm tag
+  PLND_YAW_TIME     = 2.0
+  PLND_YAW_RATE     = 10        # VERY SLOW for 27mm tag
+  PLND_YAW_STABLE   = 2.0       # Extra stable time
+  PLND_YAW_MAXALT   = 2.5       # Low altitude (27mm tag visibility)
+  PLND_YAW_FALT     = 0.8       # Fine align close to ground
+  PLND_YAW_FILT     = 0.65      # Heavy filtering
+  PLND_ACC_ERR      = 0.08      # 8cm tolerance
+  PLND_MIN_DSPD     = 0.06      # 6cm/s descent
+  PLND_FINE_CORR    = 0.08      # 8cm max correction
+
+--------------------------------------------------------------------------------
+Disable Yaw Alignment (Position-only landing):
+--------------------------------------------------------------------------------
   PLND_YAW_TGT      = -1
 
 
@@ -315,19 +396,78 @@ TROUBLESHOOTING
 ================================================================================
 
 Problem: Drone oscillates in yaw during alignment
-Solution: Increase PLND_YAW_FILT (e.g., 0.6-0.7) and/or decrease PLND_YAW_RATE
+Symptoms: Yaw overshoots back and forth around target angle
+Solutions:
+  1. Increase PLND_YAW_FILT (0.6-0.7) - more smoothing
+  2. Decrease PLND_YAW_RATE (10-15 deg/s) - slower rotation
+  3. Check ATC_ACCEL_Y_MAX and ATC_RAT_YAW_* PID tuning
 
 Problem: Target lost during rotation
-Solution: Decrease PLND_YAW_RATE, decrease PLND_YAW_MAXALT, ensure tag is large
+Symptoms: "Target lost during alignment" messages
+Solutions:
+  1. Decrease PLND_YAW_RATE (10 deg/s or less for small tags)
+  2. Decrease PLND_YAW_MAXALT (ensure tag is large at alignment altitude)
+  3. Ensure camera has wide enough FOV
+  4. Check camera mount - must be stable during yaw
 
 Problem: Alignment takes too long
-Solution: Increase PLND_YAW_COARSE, decrease PLND_YAW_TIME
+Symptoms: Drone hovers for extended periods
+Solutions:
+  1. Increase PLND_YAW_COARSE (2500+ for faster alignment)
+  2. Decrease PLND_YAW_TIME (1.5s minimum)
+  3. Increase PLND_YAW_RATE (if tag is large enough)
 
 Problem: Drone drifts during fine alignment
-Solution: Decrease PLND_FINE_CORR, check wind conditions
+Symptoms: Position error increases during fine phase
+Solutions:
+  1. Decrease PLND_FINE_CORR (0.08-0.10m)
+  2. Check wind conditions
+  3. Verify position controller tuning (PSC_* parameters)
 
 Problem: Yaw alignment never starts
-Solution: Check PLND_YAW_XY_GATE (disable if needed), check PLND_YAW_MAXALT
+Symptoms: Drone descends without rotating
+Solutions:
+  1. Check PLND_YAW_TGT is NOT -1 (disabled)
+  2. Check PLND_YAW_MAXALT - drone may be too high
+  3. Check PLND_YAW_XY_GATE - may be waiting for XY centering
+  4. Verify camera is sending yaw data (quaternion in LANDING_TARGET)
+
+Problem: "XY center timeout" message
+Symptoms: Drone can't center over target
+Solutions:
+  1. Check position controller tuning
+  2. Increase PLND_ACC_ERR (0.15-0.20m)
+  3. Reduce wind or improve position hold performance
+
+Problem: "Fine align timeout" message
+Symptoms: Drone hovers at low altitude without completing
+Solutions:
+  1. Yaw may be oscillating - increase PLND_YAW_FILT
+  2. Target may be losing track - check camera stability
+  3. Tolerance may be too tight - increase PLND_YAW_FINE
+
+Problem: Drone lands off-center
+Symptoms: Final position not on target
+Solutions:
+  1. Check camera offset parameters (PLND_CAM_POS_X/Y/Z)
+  2. Check PLND_LAND_OFS_X/Y settings
+  3. Verify multi-marker offsets in OpenMV code
+  4. Reduce PLND_FINE_CORR for less last-second corrections
+
+================================================================================
+STATE MACHINE TIMING REFERENCE
+================================================================================
+
+State               | Hold/Timeout | Purpose
+--------------------|--------------|----------------------------------------
+XY_CENTERING        | 1s stable    | Ensure XY is centered before rotation
+                    | 30s timeout  | Prevent indefinite centering
+COARSE_ALIGNING     | YAW_TIME     | Verify yaw alignment is stable
+                    | 30s timeout  | Prevent indefinite rotation
+DESCENDING          | continuous   | Active descent with yaw correction
+FINE_ALIGNING       | YAW_TIME     | Final yaw verification
+                    | 20s timeout  | Prevent indefinite hover
+FINAL_DESCENT       | continuous   | Descent to landing
 
 
 ================================================================================

@@ -882,16 +882,18 @@ void Mode::land_run_horizontal_control()
     // ========================================================================
 #if AC_PRECLAND_ENABLED
     if (copter.ap.prec_land_active) {
-        Vector2p target_pos_ne_m;
+        // SAFETY: Initialize to current position to prevent undefined behavior
+        Vector2p target_pos_ne_m = pos_control->get_pos_estimate_NED_m().xy();
         Vector2f target_vel_ne_ms;
         
-        // FIX: During yaw alignment, the target position estimate is UNRELIABLE
-        // because the camera may be pointing in a different direction.
-        // Only use target position during DESCENDING (active correction).
-        // In FINAL_DESCENT, just hold position and go straight down - the drone
-        // should already be well-centered from fine alignment, and any horizontal
-        // movement at low altitude risks losing the target.
-        bool alignment_complete = (yaw_state == AC_PrecLand::YawAlignState::DESCENDING);
+        // Position control strategy based on state:
+        // - XY_CENTERING: Use target position to center over target
+        // - COARSE_ALIGNING: Hold position (no target correction during rotation)
+        // - DESCENDING: Use target position for precision correction
+        // - FINE_ALIGNING/FINAL_DESCENT: Limited correction to avoid oscillation
+        bool use_target_position = (yaw_state == AC_PrecLand::YawAlignState::XY_CENTERING ||
+                                    yaw_state == AC_PrecLand::YawAlignState::DESCENDING);
+        bool alignment_complete = use_target_position;
         
         // Check if we have a valid target position (only trust it if alignment is complete)
         bool have_valid_target_pos = false;
@@ -931,12 +933,24 @@ void Mode::land_run_horizontal_control()
         
         if (!have_valid_target_pos) {
             // During alignment OR no valid target: Position control strategy
+            // NOTE: These are static but get reset when not in fine phase
             static Vector2p fine_align_ref_pos;
             static bool fine_align_ref_valid = false;
+            static uint8_t last_fine_phase_state = 0;
             
             bool in_fine_phase = (yaw_state == AC_PrecLand::YawAlignState::FINE_ALIGNING ||
                                   yaw_state == AC_PrecLand::YawAlignState::FINE_HOLDING ||
                                   yaw_state == AC_PrecLand::YawAlignState::FINAL_DESCENT);
+            
+            // SAFETY: Reset reference when entering fine phase from different state
+            // This handles mode switches and re-entries correctly
+            if (in_fine_phase && last_fine_phase_state != static_cast<uint8_t>(yaw_state)) {
+                fine_align_ref_valid = false;  // Force re-capture of reference position
+                last_fine_phase_state = static_cast<uint8_t>(yaw_state);
+            } else if (!in_fine_phase) {
+                fine_align_ref_valid = false;  // Reset when not in fine phase
+                last_fine_phase_state = 0;
+            }
             
             if (in_fine_phase) {
                 // WIND-ROBUST APPROACH: Try to use target position with sanity limits
@@ -975,8 +989,20 @@ void Mode::land_run_horizontal_control()
                     // No target - hold reference position
                     target_pos_ne_m = fine_align_ref_pos;
                 }
+            } else if (yaw_state == AC_PrecLand::YawAlignState::XY_CENTERING) {
+                // XY_CENTERING: Actively navigate to target position to center over it
+                // This happens BEFORE yaw alignment starts
+                fine_align_ref_valid = false;
+                Vector2p target_pos_temp;
+                if (copter.precland.get_target_position_m(target_pos_temp)) {
+                    target_pos_ne_m = target_pos_temp;
+                } else {
+                    // No target - hold current position
+                    target_pos_ne_m = pos_control->get_pos_estimate_NED_m().xy();
+                }
             } else {
-                // For other states (SEARCHING, COARSE_ALIGNING, etc.): use current position
+                // For other states (SEARCHING, COARSE_ALIGNING, COARSE_HOLDING): hold position
+                // Don't use target position during rotation - camera may point away from target
                 fine_align_ref_valid = false;
                 target_pos_ne_m = pos_control->get_pos_estimate_NED_m().xy();
             }
@@ -1015,10 +1041,13 @@ void Mode::land_run_horizontal_control()
                 // FIX: Check if target is still visible/acquired before enabling yaw control
                 bool target_ok = copter.precland.target_visible() || copter.precland.target_acquired();
                 
-                // Only control yaw when in an active alignment state AND target is OK
+                // Only control yaw when in an active ALIGNMENT state AND target is OK
+                // XY_CENTERING: NO yaw control (center first, then rotate)
+                // COARSE_ALIGNING and later: yaw control active
                 bool yaw_control_active = target_ok && 
                     (state != static_cast<uint8_t>(AC_PrecLand::YawAlignState::DISABLED) && 
-                     state != static_cast<uint8_t>(AC_PrecLand::YawAlignState::SEARCHING));
+                     state != static_cast<uint8_t>(AC_PrecLand::YawAlignState::SEARCHING) &&
+                     state != static_cast<uint8_t>(AC_PrecLand::YawAlignState::XY_CENTERING));
                 
                 if (yaw_control_active) {
                     auto_yaw.set_precland_target_yaw_rad(desired_yaw);

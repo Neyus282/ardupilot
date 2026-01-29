@@ -1,0 +1,521 @@
+================================================================================
+           PRECISION LANDING - EDGE CASE TEST PROCEDURE
+                    MAVProxy Commands & Missions
+================================================================================
+
+This document provides MAVProxy commands and mission sequences for testing
+the Precision Landing system, including edge cases and failure scenarios.
+
+================================================================================
+PREREQUISITES
+================================================================================
+
+1. SITL or real hardware with:
+   - Rangefinder configured and working
+   - Precision landing backend (MAVLink/SITL_Gazebo)
+   - Camera or simulation sending LANDING_TARGET messages
+
+2. MAVProxy connected:
+   mavproxy.py --master=udp:127.0.0.1:14550 --console --map
+
+3. Parameter file loaded (adjust for your setup):
+   param load precland_test.parm
+
+================================================================================
+PARAMETER SETUP FOR TESTING
+================================================================================
+
+# Load these parameters before testing:
+
+# === Basic PrecLand ===
+param set PLND_ENABLED 1
+param set PLND_TYPE 1               # MAVLink (or 3 for SITL_Gazebo)
+param set PLND_EST_TYPE 1           # Kalman Filter
+
+# === Yaw Alignment (Small Tags) ===
+param set PLND_YAW_TGT 0            # Align to tag X-axis
+param set PLND_YAW_COARSE 1500      # 15 deg
+param set PLND_YAW_FINE 300         # 3 deg
+param set PLND_YAW_TIME 2.0
+param set PLND_YAW_RATE 12          # Slow for small tags
+param set PLND_YAW_STABLE 1.5
+param set PLND_YAW_MAXALT 3.0
+param set PLND_YAW_FALT 1.0
+param set PLND_YAW_FILT 0.6
+param set PLND_YAW_XY_GATE 1
+
+# === Position Control ===
+param set PLND_ACC_ERR 0.10
+param set PLND_MIN_DSPD 0.08
+param set PLND_FINE_CORR 0.10
+param set PLND_XY_DIST_MAX 1.5
+
+# === Timeouts ===
+param set PLND_TIMEOUT 4
+param set PLND_STRICT 1
+
+# === Rangefinder ===
+param set RNGFND1_TYPE 1            # Analog (or appropriate)
+param set RNGFND1_MIN_CM 20
+param set RNGFND1_MAX_CM 1000
+
+
+================================================================================
+TEST 1: BASIC PRECISION LANDING (Normal Case)
+================================================================================
+
+Purpose: Verify basic functionality with target visible throughout
+
+Steps:
+-------
+# 1. Arm and takeoff to 5m
+arm throttle
+mode guided
+takeoff 5
+
+# 2. Wait for stable hover (5 seconds)
+# Observe: Drone should hold position
+
+# 3. Move to position above target (if not already)
+# Use map click or:
+guided <lat> <lon> 5
+
+# 4. Initiate landing
+mode land
+
+# Expected Sequence:
+# - SEARCHING: Descending, looking for target
+# - XY_CENTERING: Target found, centering over it
+# - COARSE_ALIGNING: Rotating to align yaw
+# - COARSE_HOLDING: Verifying alignment
+# - DESCENDING: Descending with yaw correction
+# - FINE_ALIGNING: Final yaw adjustment at low altitude
+# - FINE_HOLDING: Verifying fine alignment
+# - FINAL_DESCENT: Landing
+
+# Watch for GCS messages:
+# "PrecLand: Target found, centering XY"
+# "PrecLand: XY stable, starting yaw align"
+# "PrecLand: Coarse alignment complete!"
+# "PrecLand: Fine align at X.Xm"
+# "PrecLand: Fine alignment complete!"
+
+
+================================================================================
+TEST 2: HIGH ALTITUDE START (Above PLND_YAW_MAXALT)
+================================================================================
+
+Purpose: Verify drone descends before starting yaw alignment
+
+Steps:
+-------
+# 1. Takeoff to 8m (above PLND_YAW_MAXALT of 3m)
+arm throttle
+mode guided
+takeoff 8
+
+# 2. Position over target
+guided <lat> <lon> 8
+
+# 3. Start landing
+mode land
+
+# Expected Behavior:
+# - Should descend in SEARCHING/XY_CENTERING state
+# - Should NOT start yaw rotation until below 3m
+# - Message: "XY centered, starting yaw align" only after altitude OK
+
+
+================================================================================
+TEST 3: OFF-CENTER START (XY Centering Test)
+================================================================================
+
+Purpose: Verify XY centering works before yaw alignment
+
+Steps:
+-------
+# 1. Takeoff
+arm throttle
+mode guided
+takeoff 4
+
+# 2. Move 2m away from target
+# (Assuming target is at current position, move north)
+position 2 0 0
+
+# 3. Start landing
+mode land
+
+# Expected Behavior:
+# - XY_CENTERING: Drone moves toward target
+# - Only after XY error < PLND_ACC_ERR (0.10m) for 1 second:
+#   "PrecLand: XY stable, starting yaw align"
+# - Then yaw rotation begins
+
+
+================================================================================
+TEST 4: YAW MISALIGNMENT START
+================================================================================
+
+Purpose: Verify yaw alignment from large initial error
+
+Steps:
+-------
+# 1. Takeoff
+arm throttle
+mode guided
+takeoff 4
+
+# 2. Rotate to face away from target alignment
+# (Rotate 180 degrees from desired alignment)
+setyaw 180 relative
+
+# 3. Wait for rotation to complete
+# (2-3 seconds)
+
+# 4. Start landing
+mode land
+
+# Expected Behavior:
+# - XY_CENTERING first (if needed)
+# - COARSE_ALIGNING: Slow rotation (PLND_YAW_RATE = 12 deg/s)
+# - Should take ~15 seconds to rotate 180 degrees
+# - Watch for smooth rotation without overshooting
+
+
+================================================================================
+TEST 5: TARGET LOSS DURING XY_CENTERING
+================================================================================
+
+Purpose: Verify recovery when target is lost during centering
+
+Steps:
+-------
+# This requires simulation control or physical obstruction
+
+# Option A: SITL with controllable target
+# (Stop sending LANDING_TARGET messages temporarily)
+
+# Option B: Physical test
+# Cover the target briefly during XY_CENTERING phase
+
+# Expected Behavior:
+# - "PrecLand: Target lost during centering"
+# - Drone holds position
+# - After PLND_TIMEOUT (4s): Returns to SEARCHING
+# - Continues descent to re-acquire target
+# - If target reappears: Resumes XY_CENTERING
+
+
+================================================================================
+TEST 6: TARGET LOSS DURING YAW ALIGNMENT
+================================================================================
+
+Purpose: Verify recovery when target is lost during rotation
+
+Steps:
+-------
+# This is a critical edge case for small tags
+
+# Simulation:
+# 1. Start normal landing
+# 2. During COARSE_ALIGNING, stop sending LANDING_TARGET
+
+# Expected Behavior:
+# - "PrecLand: Target lost during yaw align"
+# - Drone STOPS rotation immediately
+# - Holds last known yaw
+# - Waits for yaw rate < 3 deg/s
+# - After timeout: Returns to XY_CENTERING (not SEARCHING)
+# - Allows descent to re-acquire target
+
+# If alignment was nearly complete (hold timer started):
+# - Transitions to DESCENDING instead
+# - "PrecLand: Yaw aligned, target lost, continuing descent"
+
+
+================================================================================
+TEST 7: TARGET LOSS DURING FINE ALIGNMENT
+================================================================================
+
+Purpose: Verify recovery at low altitude
+
+Steps:
+-------
+# 1. Start normal landing
+# 2. Wait until "PrecLand: Fine align at X.Xm"
+# 3. Cover/remove target briefly
+
+# Expected Behavior:
+# - "PrecLand: Target lost at fine align, waiting"
+# - Holds position for 3 seconds
+# - If target reappears: "PrecLand: Target re-acquired at fine align"
+# - If timeout: "PrecLand: Target not re-acquired, final descent"
+# - Proceeds to FINAL_DESCENT anyway
+
+
+================================================================================
+TEST 8: WIND DISTURBANCE (Simulated)
+================================================================================
+
+Purpose: Verify system handles wind compensation
+
+Steps (SITL):
+-------------
+# 1. Start landing
+mode land
+
+# 2. Add simulated wind during descent
+param set SIM_WIND_SPD 5        # 5 m/s wind
+param set SIM_WIND_DIR 90       # From East
+
+# 3. Observe position holding
+
+# Expected Behavior:
+# - XY_CENTERING: May take longer to stabilize
+# - During descent: Continuous position correction
+# - FINE_ALIGNING: PLND_FINE_CORR limits corrections
+# - Should still land within acceptable accuracy
+
+
+================================================================================
+TEST 9: RAPID TARGET ACQUISITION/LOSS (Flicker)
+================================================================================
+
+Purpose: Verify system handles intermittent detection
+
+Steps:
+-------
+# This simulates a tag at the edge of camera FOV or poor lighting
+
+# Simulation:
+# Send LANDING_TARGET messages intermittently (every 500ms instead of 50ms)
+
+# Expected Behavior:
+# - System should not oscillate between states
+# - Hysteresis should prevent rapid state changes
+# - May see "Target lost" / "Target re-acquired" messages
+# - Should eventually complete landing
+
+
+================================================================================
+TEST 10: ABORT AND RETRY
+================================================================================
+
+Purpose: Verify system can abort and retry landing
+
+Steps:
+-------
+# 1. Start landing
+arm throttle
+mode guided
+takeoff 5
+mode land
+
+# 2. Wait until DESCENDING state
+# (Watch for "Descending with yaw control active")
+
+# 3. Abort landing
+mode guided
+
+# 4. Reposition
+position 0 2 0
+
+# 5. Retry landing
+mode land
+
+# Expected Behavior:
+# - Landing aborts cleanly
+# - New landing attempt starts fresh
+# - State machine resets to SEARCHING
+# - Full sequence repeats
+
+
+================================================================================
+TEST 11: TIMEOUT TESTS
+================================================================================
+
+Purpose: Verify all timeout mechanisms work
+
+Test A: XY Centering Timeout (30s)
+----------------------------------
+# Start landing with target out of reach (XY error > tolerance)
+# Expected: After 30s, "PrecLand: XY center timeout, starting yaw align anyway"
+
+Test B: Yaw Alignment Timeout (30s)
+-----------------------------------
+# Start landing with very large yaw error and very slow rate
+param set PLND_YAW_RATE 5
+# Expected: After 30s, "PrecLand: Yaw align timeout"
+
+Test C: Fine Alignment Timeout (20s)
+------------------------------------
+# Start landing, at FINE_ALIGNING state, prevent yaw from reaching tolerance
+# Expected: After 20s, "PrecLand: Fine align timeout, final descent"
+
+
+================================================================================
+TEST 12: PARAMETER CHANGE DURING LANDING
+================================================================================
+
+Purpose: Verify system handles parameter changes safely
+
+Steps:
+-------
+# 1. Start landing
+mode land
+
+# 2. During XY_CENTERING, disable yaw alignment
+param set PLND_YAW_TGT -1
+
+# Expected Behavior:
+# - "PrecLand: Yaw align disabled via parameter"
+# - State machine transitions to DISABLED
+# - Normal position-only precision landing continues
+
+
+================================================================================
+AUTOMATED TEST SCRIPT (Python/MAVProxy)
+================================================================================
+
+Save this as test_precland.py and run with:
+  module load test_precland
+
+```python
+#!/usr/bin/env python
+"""
+Precision Landing Automated Test Script
+Run in MAVProxy: module load test_precland
+"""
+
+import time
+from MAVProxy.modules.lib import mp_module
+
+class PrecLandTest(mp_module.MPModule):
+    def __init__(self, mpstate):
+        super(PrecLandTest, self).__init__(mpstate, "test_precland", "PrecLand tester")
+        self.add_command('pltest', self.cmd_pltest, "Run precision landing test")
+    
+    def cmd_pltest(self, args):
+        if len(args) < 1:
+            print("Usage: pltest <test_number>")
+            print("  1: Basic landing")
+            print("  2: High altitude start")
+            print("  3: Off-center start")
+            print("  4: Yaw misalignment")
+            return
+        
+        test_num = int(args[0])
+        
+        if test_num == 1:
+            self.run_basic_test()
+        elif test_num == 2:
+            self.run_high_alt_test()
+        elif test_num == 3:
+            self.run_offcenter_test()
+        elif test_num == 4:
+            self.run_yaw_test()
+    
+    def run_basic_test(self):
+        print("=== Test 1: Basic Precision Landing ===")
+        self.master.arducopter_arm()
+        time.sleep(2)
+        self.master.mav.command_long_send(
+            self.target_system, self.target_component,
+            mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+            0, 0, 0, 0, 0, 0, 0, 5)
+        time.sleep(10)
+        self.master.set_mode('LAND')
+        print("Landing initiated - watch for state transitions")
+    
+    # ... more test methods ...
+
+def init(mpstate):
+    return PrecLandTest(mpstate)
+```
+
+
+================================================================================
+EXPECTED LOG MESSAGES REFERENCE
+================================================================================
+
+Normal Sequence:
+  "PrecLand: Yaw align active, searching"
+  "PrecLand: Target found, centering XY"
+  "PrecLand: XY stable (0.08m), starting yaw align"
+  "PrecLand: Coarse alignment complete!"
+  "PrecLand: Descending with yaw control active"
+  "PrecLand: Fine align at 1.0m (descent paused)"
+  "PrecLand: Fine alignment complete!"
+  "PrecLand: Final descent with yaw locked"
+
+Error/Recovery Messages:
+  "PrecLand: Target lost during centering"
+  "PrecLand: Target lost during yaw align"
+  "PrecLand: Re-centering to find target"
+  "PrecLand: Target re-acquired"
+  "PrecLand: XY center timeout, starting yaw align anyway"
+  "PrecLand: Yaw align timeout"
+  "PrecLand: Fine align timeout (20s), final descent"
+  "PrecLand: Yaw aligned, target lost, continuing descent"
+
+
+================================================================================
+DATAFLASH LOG ANALYSIS
+================================================================================
+
+After test, download logs and check:
+
+# MAVProxy command to download log
+log download latest
+
+# Key log messages to search for:
+grep -i "precland" log.bin.log
+
+# Or use Mission Planner / UAV Log Viewer:
+# Filter by "PREC" or "PrecLand"
+
+Key metrics to verify:
+1. XY error during DESCENDING phase (should decrease)
+2. Yaw error during alignment (should reach tolerance)
+3. Final landing position error
+4. Time spent in each state
+
+
+================================================================================
+QUICK REFERENCE - COMMON COMMANDS
+================================================================================
+
+# Arm and takeoff
+arm throttle
+mode guided
+takeoff 5
+
+# Start landing
+mode land
+
+# Abort landing
+mode guided
+
+# Check parameters
+param show PLND*
+
+# Set parameter
+param set PLND_YAW_RATE 15
+
+# Watch status
+status
+
+# Reset to defaults
+param set PLND_YAW_TGT 0
+param set PLND_YAW_RATE 12
+param set PLND_YAW_MAXALT 3
+
+# Disable yaw alignment
+param set PLND_YAW_TGT -1
+
+
+================================================================================
+Document Version: 1.0
+Last Updated: January 2026
+================================================================================
