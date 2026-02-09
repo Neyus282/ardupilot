@@ -389,6 +389,7 @@ private:
 
     // write out PREC message to log:
     void Write_Precland();
+    void Write_PreclandYaw(float rangefinder_alt_m);
     uint32_t _last_log_ms;  // last time we logged
 
     static AC_PrecLand *_singleton; //singleton

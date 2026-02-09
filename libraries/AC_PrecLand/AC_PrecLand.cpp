@@ -25,7 +25,9 @@ extern const AP_HAL::HAL& hal;
 #endif
 
 static const uint32_t EKF_INIT_TIME_MS = 2000; // EKF initialisation requires this many milliseconds of good sensor data
-static const uint32_t EKF_INIT_SENSOR_MIN_UPDATE_MS = 500; // Sensor must update within this many ms during EKF init, else init will fail
+static const uint32_t EKF_INIT_SENSOR_MIN_UPDATE_MS = 1500; // Sensor must update within this many ms during EKF init, else init will fail.
+                                                             // Increased from 500ms to 1500ms to be robust with low-FPS cameras (~7 FPS)
+                                                             // where wind gusts can cause several consecutive missed detections.
 static const uint32_t LANDING_TARGET_TIMEOUT_MS = 2000; // Sensor must update within this many ms, else prec landing will be switched off
 static const uint32_t LANDING_TARGET_LOST_TIMEOUT_MS = 180000; // Target will be considered as "lost" if the last known location of the target is more than this many ms ago
 static const float    LANDING_TARGET_LOST_DIST_THRESH_M  = 30; // If the last known location of the landing target is beyond this many meters, then we will consider it lost
@@ -433,6 +435,7 @@ void AC_PrecLand::update(float rangefinder_alt_cm, bool rangefinder_alt_valid)
     if (now - _last_log_ms > 40) {  // 25Hz
         _last_log_ms = now;
         Write_Precland();
+        Write_PreclandYaw(rangefinder_alt_m);
     }
 #endif
 }
@@ -524,9 +527,26 @@ bool AC_PrecLand::target_acquired()
             // just lost the landing target, inform the user. This message will only be sent once every time target is lost
             GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "PrecLand: Target Lost");
         }
-        // not had a sensor update since a long time
-        // probably lost the target
-        _estimator_initialized = false;
+        // Target lost - mark as not acquired but keep EKF state!
+        // By keeping _estimator_initialized = true, the EKF continues to predict
+        // using accelerometer data. When the target reappears:
+        // - The NIS check determines if the new measurement matches the prediction
+        // - If yes (NIS < 3): fused immediately, no reinit wait
+        // - If no (NIS > 3): rejected as outlier, but forced in after 3 rejections
+        // - check_ekf_init_timeout() immediately sets _target_acquired = true
+        //   because _estimator_init_ms is already well past EKF_INIT_TIME_MS
+        //
+        // This eliminates the 2-second reinit penalty for brief target loss,
+        // which is critical at 7 FPS where 2 seconds = 14 lost frames.
+        //
+        // Safety: if the EKF has been predicting without measurements for too long
+        // (>30 seconds), the prediction is meaningless - force full reinit.
+        const uint32_t predict_only_duration_ms = AP_HAL::millis() - _last_update_ms;
+        if (_estimator_initialized && predict_only_duration_ms > 30000) {
+            _estimator_initialized = false;
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "PrecLand: EKF predict-only timeout (30s), will reinit");
+        }
+        // Note: _estimator_initialized is preserved for short losses (<30s)
         _target_acquired = false;
     }
     return _target_acquired;
@@ -1054,6 +1074,44 @@ void AC_PrecLand::Write_Precland()
     };
     AP::logger().WriteBlock(&pkt, sizeof(pkt));
 }
+
+// Write precision landing yaw alignment diagnostics
+void AC_PrecLand::Write_PreclandYaw(float rangefinder_alt_m)
+{
+    if (!enabled()) {
+        return;
+    }
+
+    const uint32_t now_ms = AP_HAL::millis();
+
+    // calculate measurement age (time since last backend measurement)
+    uint32_t meas_age_ms = 0;
+    if (_last_backend_los_meas_ms > 0) {
+        meas_age_ms = now_ms - _last_backend_los_meas_ms;
+    }
+
+    // calculate XY error to target
+    float xy_error_m = 0.0f;
+    Vector2f target_pos_rel_ne_m;
+    if (get_target_position_relative_NE_m(target_pos_rel_ne_m)) {
+        xy_error_m = target_pos_rel_ne_m.length();
+    }
+
+    const struct log_PreclandYaw pkt {
+        LOG_PACKET_HEADER_INIT(LOG_PRECLAND2_MSG),
+        time_us         : AP_HAL::micros64(),
+        yaw_state       : static_cast<uint8_t>(_yaw_align_state),
+        target_visible  : target_visible() ? uint8_t(1) : uint8_t(0),
+        target_acquired : _target_acquired ? uint8_t(1) : uint8_t(0),
+        target_yaw_deg  : degrees(_target_yaw_rad),
+        yaw_error_deg   : degrees(get_yaw_alignment_error_rad()),
+        meas_age_ms     : meas_age_ms,
+        rf_alt_m        : rangefinder_alt_m,
+        xy_error_m      : xy_error_m,
+    };
+    AP::logger().WriteBlock(&pkt, sizeof(pkt));
+}
+#endif  // HAL_LOGGING_ENABLED
 
 // =============================================================================
 // Yaw Alignment State Machine Implementation
@@ -1690,10 +1748,8 @@ AC_PrecLand::YawAlignResult AC_PrecLand::yaw_align_update(float rangefinder_alt_
     return result;
 }
 
-#endif
-
 // ============================================================================
-// Target Yaw Orientation Functions (NUR EINMAL, AUSSERHALB von HAL_LOGGING!)
+// Target Yaw Orientation Functions
 // ============================================================================
 
 void AC_PrecLand::set_target_yaw_rad(float yaw_rad, uint32_t timestamp_ms)

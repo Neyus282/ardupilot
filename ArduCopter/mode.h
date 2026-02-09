@@ -246,13 +246,30 @@ protected:
     float get_cached_desired_yaw_rad();
     uint8_t get_cached_yaw_state();
     
-    // Cached values
+    // Reset all precision landing state (call on mode init)
+    void precland_reset_state();
+    
+    // Cached values (yaw alignment)
     static bool _cached_yaw_allow_descent;
     static bool _cached_yaw_aligned;
     static float _cached_desired_yaw_rad;
     static float _cached_yaw_error_deg;
     static uint8_t _cached_yaw_state;
     static uint32_t _yaw_cache_update_ms;
+
+    // Fine alignment reference position (replaces static locals)
+    Vector2p _fine_align_ref_pos;
+    bool _fine_align_ref_valid = false;
+    uint8_t _last_fine_phase_state = 0;
+
+    // Descending target memory (replaces static locals)
+    Vector2p _last_descending_target_pos;
+    bool _last_descending_target_valid = false;
+    uint32_t _last_descending_target_seen_ms = 0;
+    uint8_t _last_state_for_descending = 0;
+
+    // Rate limiter for altitude sanity warning
+    uint32_t _last_sanity_warn_ms = 0;
 #endif
 
     // return expected input throttle setting to hover:
